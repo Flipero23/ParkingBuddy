@@ -1,3 +1,4 @@
+
 # ParkingBuddy — Project Overview
 
 A Spring Boot REST API that helps drivers find nearby parking spots, reserve them, and track active parking sessions. It uses a PostgreSQL database with the PostGIS extension to handle location-based queries.
