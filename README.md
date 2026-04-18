@@ -88,7 +88,7 @@ parking_buddy/
 |--------|-----|------------|-------------|
 | `GET` | `/api/spots/nearby` | `lat`, `lon` (decimal); `radius` (meters, default 500); `limit` (default 20) | Returns available spots within the radius, sorted by distance. |
 
-Example: `GET /api/spots/nearby?lat=41.9981&lon=21.4254&radius=300&limit=10`
+Example: `GET /api/spots/nearby?lat=41.9981&lon=21.4254`
 
 **Session management**
 
