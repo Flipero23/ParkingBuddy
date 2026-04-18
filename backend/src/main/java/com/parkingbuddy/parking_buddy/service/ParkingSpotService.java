@@ -26,9 +26,10 @@ public class ParkingSpotService {
             spot.put("status", row[4]);
             spot.put("maxDurationMinutes", row[5]);
             spot.put("pricePerHour", row[6]);
-            spot.put("distance", row[7]);
-            spot.put("latitude", row[8]);
-            spot.put("longitude", row[9]);
+            spot.put("latitude", row[7]);
+            spot.put("longitude", row[8]);
+            spot.put("distance", row[9]);
+
             spots.add(spot);
         }
 

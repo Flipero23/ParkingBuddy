@@ -66,8 +66,9 @@ public class ParkingSessionService {
         spot.setStatus("available");
         spotRepository.save(spot);
 
-        long minutes = Duration.between(session.getStartTime(), session.getEndTime()).toMinutes();
-        double cost = Math.ceil(minutes / 60.0) * spot.getPricePerHour().doubleValue();
+        long minutes = Math.max(1, Duration.between(session.getStartTime(), session.getEndTime()).toMinutes());
+        long billedHours = Math.max(1, (long) Math.ceil(minutes / 60.0));
+        double cost = billedHours * spot.getPricePerHour().doubleValue();
 
         Map<String, Object> result = new HashMap<>();
         result.put("sessionId", session.getId());
