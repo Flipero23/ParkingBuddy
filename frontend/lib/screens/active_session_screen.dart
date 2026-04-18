@@ -64,15 +64,16 @@ class _ActiveSessionScreenState extends State<ActiveSessionScreen>
   }
 
   double get _currentCost {
-    final hours = _elapsed.inSeconds / 3600.0;
-    return hours * widget.spot.pricePerHour;
+    final minutes = _elapsed.inMinutes;
+    final billedHours = minutes == 0 ? 1 : (minutes / 60.0).ceil();
+    return billedHours * widget.spot.pricePerHour;
   }
 
   Future<void> _endParking() async {
     try {
       final result = await widget.apiService.endParking(widget.spot.id);
       if (!mounted) return;
-      final totalCost = (result['totalCost'] as num?)?.toDouble() ?? _currentCost;
+      final totalCost = (result['cost'] as num?)?.toDouble() ?? _currentCost;
       Navigator.of(context).pushReplacement(
         MaterialPageRoute(
           builder: (_) => PaymentScreen(

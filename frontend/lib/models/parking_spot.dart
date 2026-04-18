@@ -34,11 +34,11 @@ class ParkingSpot {
       distance: (json['distance'] as num?)?.toDouble() ?? 0.0,
       pricePerHour: (json['pricePerHour'] as num?)?.toDouble() ?? 0.0,
       maxDurationMinutes: (json['maxDurationMinutes'] as num?)?.toInt() ?? 120,
-      status: json['status']?.toString() ?? 'AVAILABLE',
+      status: json['status']?.toString() ?? 'available',
     );
   }
 
-  bool get isAvailable => status == 'AVAILABLE';
-  bool get isReserved => status == 'RESERVED';
-  bool get isOccupied => status == 'OCCUPIED';
+  bool get isAvailable => status.toLowerCase() == 'available';
+  bool get isReserved => status.toLowerCase() == 'reserved';
+  bool get isOccupied => status.toLowerCase() == 'occupied';
 }

@@ -11,10 +11,11 @@ public interface ParkingSpotRepository extends JpaRepository<ParkingSpot, Intege
     @Query(value = """
         SELECT id, code, street_name, zone, status,
                max_duration_minutes, price_per_hour,
-               ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography) AS distance
+               ST_Distance(geom::geography, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography) AS distance,
+               ST_Y(geom) AS latitude,
+               ST_X(geom) AS longitude
         FROM parking_spots
-        WHERE status = 'available'
-          AND ST_DWithin(geom::geography, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography, :radius)
+        WHERE ST_DWithin(geom::geography, ST_SetSRID(ST_MakePoint(:lon, :lat), 4326)::geography, :radius)
         ORDER BY distance
         LIMIT :limit
     """, nativeQuery = true)

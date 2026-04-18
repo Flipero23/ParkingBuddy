@@ -76,7 +76,7 @@ class _ReservationScreenState extends State<ReservationScreen>
         backgroundColor: AppColors.warning,
       ),
     );
-    Navigator.of(context).pop();
+    Navigator.of(context).pop(true);
   }
 
   Future<void> _cancelReservation() async {
@@ -85,11 +85,16 @@ class _ReservationScreenState extends State<ReservationScreen>
     } on ApiException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
+        SnackBar(
+          content: Text(e.message),
+          backgroundColor: AppColors.danger,
+        ),
       );
+      return;
     }
+
     if (!mounted) return;
-    Navigator.of(context).pop();
+    Navigator.of(context).pop(true);
   }
 
   Future<void> _startParking() async {

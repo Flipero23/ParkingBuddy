@@ -215,11 +215,13 @@ class SpotBottomSheet extends StatelessWidget {
   }
 
   Future<void> _handleReserve(BuildContext context) async {
-    Navigator.of(context).pop();
     try {
       await apiService.reserveSpot(spot.id);
       if (!context.mounted) return;
-      Navigator.of(context).push(
+
+      Navigator.of(context).pop();
+
+      final shouldRefresh = await Navigator.of(context).push<bool>(
         MaterialPageRoute(
           builder: (_) => ReservationScreen(
             spot: spot,
@@ -227,6 +229,10 @@ class SpotBottomSheet extends StatelessWidget {
           ),
         ),
       );
+
+      if (shouldRefresh == true) {
+        onActionComplete();
+      }
     } on ApiException catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
@@ -245,10 +251,12 @@ class SpotBottomSheet extends StatelessWidget {
     );
     if (licensePlate == null || !context.mounted) return;
 
-    Navigator.of(context).pop();
     try {
       final session = await apiService.startParking(spot.id, licensePlate);
       if (!context.mounted) return;
+
+      onActionComplete();
+
       Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => ActiveSessionScreen(

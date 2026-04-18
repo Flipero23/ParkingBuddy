@@ -19,19 +19,28 @@ class ApiService {
     final uri = Uri.parse(
       '$_baseUrl/api/spots/nearby?lat=$lat&lon=$lon&radius=$radius&limit=$limit',
     );
+
+
     final response = await _client.get(uri);
+
+
     if (response.statusCode == 200) {
       final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
       return data
           .map((e) => ParkingSpot.fromJson(e as Map<String, dynamic>))
           .toList();
     }
-    throw ApiException('Грешка при вчитување на паркинг места', response.statusCode);
+
+    throw ApiException(
+      'Грешка при вчитување на паркинг места',
+      response.statusCode,
+    );
   }
 
   Future<void> reserveSpot(String spotId) async {
     final uri = Uri.parse('$_baseUrl/api/sessions/reserve/$spotId');
     final response = await _client.post(uri);
+
     if (response.statusCode != 200 && response.statusCode != 201) {
       throw ApiException('Грешка при резервација', response.statusCode);
     }
@@ -40,30 +49,38 @@ class ApiService {
   Future<void> cancelReservation(String spotId) async {
     final uri = Uri.parse('$_baseUrl/api/sessions/cancel/$spotId');
     final response = await _client.post(uri);
+
     if (response.statusCode != 200) {
       throw ApiException('Грешка при откажување', response.statusCode);
     }
   }
 
   Future<ParkingSession> startParking(String spotId, String licensePlate) async {
-    final uri = Uri.parse(
-      '$_baseUrl/api/sessions/start/$spotId?licensePlate=$licensePlate',
+    final uri = Uri.parse('$_baseUrl/api/sessions/start/$spotId').replace(
+      queryParameters: {
+        'licensePlate': licensePlate,
+      },
     );
+
     final response = await _client.post(uri);
+
     if (response.statusCode == 200 || response.statusCode == 201) {
       return ParkingSession.fromJson(
         jsonDecode(response.body) as Map<String, dynamic>,
       );
     }
+
     throw ApiException('Грешка при започнување паркирање', response.statusCode);
   }
 
   Future<Map<String, dynamic>> endParking(String spotId) async {
     final uri = Uri.parse('$_baseUrl/api/sessions/end/$spotId');
     final response = await _client.post(uri);
+
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;
     }
+
     throw ApiException('Грешка при завршување паркирање', response.statusCode);
   }
 

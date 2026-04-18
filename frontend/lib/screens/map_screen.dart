@@ -18,12 +18,15 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   GoogleMapController? _mapController;
   final ApiService _apiService = ApiService();
   final TextEditingController _searchController = TextEditingController();
+  final FocusNode _searchFocus = FocusNode();
 
   Position? _currentPosition;
   Set<Marker> _markers = {};
-  List<ParkingSpot> _spots = []; // retained for future search/filter
+  List<ParkingSpot> _spots = [];
+  List<ParkingSpot> _searchResults = [];
   bool _isLoading = true;
   bool _hasLocationPermission = false;
+  bool _showSearchResults = false;
 
   static const LatLng _skopjeCenter = LatLng(41.9981, 21.4254);
 
@@ -40,6 +43,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     _fabScaleAnim = Tween<double>(begin: 1.0, end: 0.9).animate(
       CurvedAnimation(parent: _fabAnimController, curve: Curves.easeInOut),
     );
+    _searchController.addListener(_onSearchChanged);
+    _searchFocus.addListener(() {
+      if (!_searchFocus.hasFocus) {
+        setState(() => _showSearchResults = false);
+      }
+    });
     _initLocation();
   }
 
@@ -48,8 +57,55 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     _mapController?.dispose();
     _apiService.dispose();
     _searchController.dispose();
+    _searchFocus.dispose();
     _fabAnimController.dispose();
     super.dispose();
+  }
+
+  void _onSearchChanged() {
+    final query = _searchController.text.trim().toLowerCase();
+    if (query.isEmpty) {
+      setState(() {
+        _searchResults = [];
+        _showSearchResults = false;
+      });
+      return;
+    }
+
+    final filtered = _spots.where((spot) {
+      return spot.streetName.toLowerCase().contains(query) ||
+          spot.code.toLowerCase().contains(query) ||
+          spot.zone.toLowerCase().contains(query);
+    }).toList();
+
+    // Deduplicate by street name, keep closest
+    final seen = <String>{};
+    final unique = <ParkingSpot>[];
+    for (final spot in filtered) {
+      if (seen.add(spot.streetName)) {
+        unique.add(spot);
+      }
+    }
+
+    setState(() {
+      _searchResults = unique.take(8).toList();
+      _showSearchResults = true;
+    });
+  }
+
+  void _onSearchResultTap(ParkingSpot spot) {
+    _searchController.clear();
+    _searchFocus.unfocus();
+    setState(() => _showSearchResults = false);
+
+    _mapController?.animateCamera(
+      CameraUpdate.newLatLngZoom(
+        LatLng(spot.latitude, spot.longitude),
+        17,
+      ),
+    );
+
+    _loadSpots(spot.latitude, spot.longitude);
   }
 
   Future<void> _initLocation() async {
@@ -82,18 +138,25 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       );
 
       if (!mounted) return;
-      setState(() => _currentPosition = position);
 
-      _mapController?.animateCamera(
-        CameraUpdate.newLatLng(
-          LatLng(position.latitude, position.longitude),
-        ),
-      );
-
-      _loadSpots(position.latitude, position.longitude);
+      if (_isInMacedonia(position.latitude, position.longitude)) {
+        setState(() => _currentPosition = position);
+        _mapController?.animateCamera(
+          CameraUpdate.newLatLng(
+            LatLng(position.latitude, position.longitude),
+          ),
+        );
+        _loadSpots(position.latitude, position.longitude);
+      } else {
+        _loadSpotsAtDefault();
+      }
     } on Exception {
       _loadSpotsAtDefault();
     }
+  }
+
+  bool _isInMacedonia(double lat, double lon) {
+    return lat >= 40.85 && lat <= 42.40 && lon >= 20.45 && lon <= 23.05;
   }
 
   void _loadSpotsAtDefault() {
@@ -103,7 +166,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   Future<void> _loadSpots(double lat, double lon) async {
     setState(() => _isLoading = true);
     try {
-      final spots = await _apiService.getNearbySpots(lat: lat, lon: lon);
+      final spots = await _apiService.getNearbySpots(
+        lat: lat,
+        lon: lon,
+        radius: 5000,
+        limit: 100,
+      );
       if (!mounted) return;
       setState(() {
         _spots = spots;
@@ -147,7 +215,6 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         spot: spot,
         apiService: _apiService,
         onActionComplete: () {
-          Navigator.of(ctx).pop();
           if (_currentPosition != null) {
             _loadSpots(
               _currentPosition!.latitude,
@@ -163,18 +230,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   void _recenterMap() {
     _fabAnimController.forward().then((_) => _fabAnimController.reverse());
-    if (_currentPosition != null) {
-      _mapController?.animateCamera(
-        CameraUpdate.newLatLngZoom(
-          LatLng(_currentPosition!.latitude, _currentPosition!.longitude),
-          16,
-        ),
-      );
-    } else {
-      _mapController?.animateCamera(
-        CameraUpdate.newLatLngZoom(_skopjeCenter, 15),
-      );
-    }
+    final target = _currentPosition != null
+        ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
+        : _skopjeCenter;
+    _mapController?.animateCamera(
+      CameraUpdate.newLatLngZoom(target, 15),
+    );
   }
 
   void _showError(String message) {
@@ -203,14 +264,25 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             myLocationButtonEnabled: false,
             zoomControlsEnabled: false,
             mapToolbarEnabled: false,
+            onTap: (_) {
+              _searchFocus.unfocus();
+              setState(() => _showSearchResults = false);
+            },
           ),
 
-          // Search bar
+          // Search bar + results dropdown
           Positioned(
             top: MediaQuery.of(context).padding.top + 12,
             left: 16,
             right: 16,
-            child: _buildSearchBar(),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              children: [
+                _buildSearchBar(),
+                if (_showSearchResults && _searchResults.isNotEmpty)
+                  _buildSearchResults(),
+              ],
+            ),
           ),
 
           // Loading indicator
@@ -226,6 +298,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                 ),
               ),
             ),
+
 
           // Recenter button
           Positioned(
@@ -252,10 +325,20 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       borderRadius: BorderRadius.circular(16),
       child: TextField(
         controller: _searchController,
+        focusNode: _searchFocus,
         decoration: InputDecoration(
-          hintText: 'Пребарај дестинација',
+          hintText: 'Пребарај дестинација во Дебар Маало',
           hintStyle: const TextStyle(color: AppColors.textSecondary),
           prefixIcon: const Icon(Icons.search, color: AppColors.accent),
+          suffixIcon: _searchController.text.isNotEmpty
+              ? IconButton(
+                  icon: const Icon(Icons.close, color: AppColors.textSecondary),
+                  onPressed: () {
+                    _searchController.clear();
+                    _searchFocus.unfocus();
+                  },
+                )
+              : null,
           filled: true,
           fillColor: Colors.white,
           border: OutlineInputBorder(
@@ -266,6 +349,82 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             horizontal: 20,
             vertical: 16,
           ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildSearchResults() {
+    return Container(
+      margin: const EdgeInsets.only(top: 4),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(12),
+        boxShadow: [
+          BoxShadow(
+            color: Colors.black.withValues(alpha: 0.12),
+            blurRadius: 8,
+            offset: const Offset(0, 4),
+          ),
+        ],
+      ),
+      child: ClipRRect(
+        borderRadius: BorderRadius.circular(12),
+        child: Column(
+          mainAxisSize: MainAxisSize.min,
+          children: _searchResults.map((spot) {
+            final availableOnStreet = _spots
+                .where((s) =>
+                    s.streetName == spot.streetName && s.isAvailable)
+                .length;
+
+            return InkWell(
+              onTap: () => _onSearchResultTap(spot),
+              child: Padding(
+                padding:
+                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                child: Row(
+                  children: [
+                    Icon(
+                      Icons.location_on,
+                      color: availableOnStreet > 0
+                          ? AppColors.accent
+                          : AppColors.textSecondary,
+                      size: 20,
+                    ),
+                    const SizedBox(width: 12),
+                    Expanded(
+                      child: Column(
+                        crossAxisAlignment: CrossAxisAlignment.start,
+                        children: [
+                          Text(
+                            spot.streetName,
+                            style: const TextStyle(
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14,
+                              color: AppColors.textPrimary,
+                            ),
+                          ),
+                          Text(
+                            'Зона ${spot.zone} · $availableOnStreet слободни',
+                            style: const TextStyle(
+                              fontSize: 12,
+                              color: AppColors.textSecondary,
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
+                    const Icon(
+                      Icons.chevron_right,
+                      color: AppColors.textSecondary,
+                      size: 20,
+                    ),
+                  ],
+                ),
+              ),
+            );
+          }).toList(),
         ),
       ),
     );
