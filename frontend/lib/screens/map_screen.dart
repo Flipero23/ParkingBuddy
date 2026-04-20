@@ -230,12 +230,26 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   void _recenterMap() {
     _fabAnimController.forward().then((_) => _fabAnimController.reverse());
-    final target = _currentPosition != null
-        ? LatLng(_currentPosition!.latitude, _currentPosition!.longitude)
-        : _skopjeCenter;
-    _mapController?.animateCamera(
-      CameraUpdate.newLatLngZoom(target, 15),
-    );
+
+    if (_currentPosition != null) {
+      final lat = _currentPosition!.latitude;
+      final lon = _currentPosition!.longitude;
+
+      _mapController?.animateCamera(
+        CameraUpdate.newLatLngZoom(
+          LatLng(lat, lon),
+          15,
+        ),
+      );
+
+      _loadSpots(lat, lon);
+    } else {
+      _mapController?.animateCamera(
+        CameraUpdate.newLatLngZoom(_skopjeCenter, 15),
+      );
+
+      _loadSpotsAtDefault();
+    }
   }
 
   void _showError(String message) {
