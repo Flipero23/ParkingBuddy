@@ -238,14 +238,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       _mapController?.animateCamera(
         CameraUpdate.newLatLngZoom(
           LatLng(lat, lon),
-          15,
+          16.5,
         ),
       );
 
       _loadSpots(lat, lon);
     } else {
       _mapController?.animateCamera(
-        CameraUpdate.newLatLngZoom(_skopjeCenter, 15),
+        CameraUpdate.newLatLngZoom(_skopjeCenter, 16.5),
       );
 
       _loadSpotsAtDefault();
@@ -270,7 +270,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           GoogleMap(
             initialCameraPosition: CameraPosition(
               target: _skopjeCenter,
-              zoom: 15,
+              zoom: 16.5,
             ),
             onMapCreated: (controller) => _mapController = controller,
             markers: _markers,

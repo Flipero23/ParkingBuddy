@@ -1,6 +1,6 @@
 UPDATE parking_spots SET status = 'available';
 
--- Радњанска: 32 total spots (4 available, 20 occupied, 4 reserved)
+-- Радњанска: 32 total spots (6 available, 22 occupied, 4 reserved)
 UPDATE parking_spots
 SET status = 'available'
 WHERE street_name = 'Радњанска';
@@ -12,7 +12,7 @@ WHERE id IN (
     FROM parking_spots
     WHERE street_name = 'Радњанска'
     ORDER BY RANDOM()
-    LIMIT 20
+    LIMIT 22
 );
 
 UPDATE parking_spots
