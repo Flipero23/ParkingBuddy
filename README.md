@@ -120,12 +120,26 @@ LIMIT :limit
 
 ### 2.4 Seed data (`data.sql`)
 
-Runs on every startup (`spring.sql.init.mode=always`) to give a realistic snapshot:
+Runs on every startup (`spring.sql.init.mode=always`) to give a realistic, street-by-street snapshot. Every spot is first reset to `available`, then each street is randomized independently with its own target distribution so the map looks plausible instead of uniformly random:
 
-1. Reset all spots to `available`.
-2. Randomly mark 130 spots `occupied`.
-3. From the remaining available spots, randomly mark 40 `reserved`.
-4. Clear all parking sessions.
+| Street | Total | Available | Occupied | Reserved |
+|--------|------:|----------:|---------:|---------:|
+| Радњанска | 32 | 6 | 22 | 4 |
+| Костурски Херои | 19 | 6 | 10 | 3 |
+| Отон Жупанчиќ | 15 | 3 | 10 | 2 |
+| Антоние Грубишиќ | 27 | 8 | 18 | 1 |
+| Наум Наумовски - Борче | 24 | 4 | 18 | 2 |
+| Коле Неделковски | 9 | 2 | 6 | 1 |
+| Пиринска | 9 | 3 | 6 | 0 |
+| Аминта Трети | 15 | 5 | 7 | 3 |
+| Михаил Цоков | 100 | 13 | 80 | 7 |
+
+On every startup the script:
+
+1. Clears all rows from `parking_sessions` so the database starts from a clean session state.
+2. Resets every spot to `available`.
+3. For each street, randomly picks N spots and sets them to `occupied`.
+4. For each street, from the remaining available spots on that same street, randomly picks M and sets them to `reserved`.
 
 ### 2.5 Database configuration
 
@@ -163,7 +177,7 @@ A single-screen-rooted app (`MapScreen` is `home`) that drives the whole parking
 
 **`services/api_service.dart`** — thin wrapper over `http.Client` with typed methods: `getNearbySpots`, `reserveSpot`, `cancelReservation`, `startParking`, `endParking`. Throws a typed `ApiException` on non-2xx. Base URL is `http://10.0.2.2:8080` (Android emulator loopback to the host).
 
-**`screens/map_screen.dart`** — Google Map centered on Skopje (`41.9981, 21.4254`), requests location permission, fetches nearby spots, renders colored markers by status, has an in-app search bar that filters by street / code / zone, a recenter FAB, and opens the spot bottom sheet on marker tap.
+**`screens/map_screen.dart`** — Google Map centered on Skopje (`41.9981, 21.4254`) at zoom level 16.5, requests location permission, fetches nearby spots, renders colored markers by status, has an in-app search bar that filters by street / code / zone, and opens the spot bottom sheet on marker tap. The recenter FAB animates the camera back to the user's GPS position (or the Skopje fallback) at zoom 16.5 **and** re-requests nearby spots, which resets marker visibility — handy for reloading after the backend re-seeds statuses.
 
 **`widgets/spot_bottom_sheet.dart`** — spot details (code, street, zone, distance, price, max duration) and the primary CTAs (Reserve, Start now).
 
