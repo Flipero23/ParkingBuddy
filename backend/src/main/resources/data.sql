@@ -1,3 +1,5 @@
+DELETE FROM parking_sessions;
+
 UPDATE parking_spots SET status = 'available';
 
 -- Радњанска: 32 total spots (6 available, 22 occupied, 4 reserved)
