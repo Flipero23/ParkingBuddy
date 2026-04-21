@@ -28,7 +28,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   bool _hasLocationPermission = false;
   bool _showSearchResults = false;
 
-  static const LatLng _skopjeCenter = LatLng(41.9981, 21.4254);
+  static const LatLng _skopjeCenter = LatLng(42.0003, 21.4177);
 
   late AnimationController _fabAnimController;
   late Animation<double> _fabScaleAnim;
