@@ -4,11 +4,16 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import '../models/parking_spot.dart';
 import '../services/api_service.dart';
+import '../services/auth_service.dart';
 import '../theme.dart';
 import '../widgets/spot_bottom_sheet.dart';
+import 'profile_screen.dart';
+import 'welcome_screen.dart';
 
 class MapScreen extends StatefulWidget {
-  const MapScreen({super.key});
+  final AuthService authService;
+
+  const MapScreen({super.key, required this.authService});
 
   @override
   State<MapScreen> createState() => _MapScreenState();
@@ -16,7 +21,7 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   GoogleMapController? _mapController;
-  final ApiService _apiService = ApiService();
+  late final ApiService _apiService = ApiService(authService: widget.authService);
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
 
@@ -214,6 +219,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       builder: (ctx) => SpotBottomSheet(
         spot: spot,
         apiService: _apiService,
+        authService: widget.authService,
         onActionComplete: () {
           if (_currentPosition != null) {
             _loadSpots(
@@ -262,6 +268,26 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     );
   }
 
+  Future<void> _openProfileOrWelcome() async {
+    _searchFocus.unfocus();
+    setState(() => _showSearchResults = false);
+
+    if (widget.authService.isLoggedIn) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ProfileScreen(authService: widget.authService),
+        ),
+      );
+    } else {
+      await Navigator.of(context).pushAndRemoveUntil(
+        MaterialPageRoute(
+          builder: (_) => WelcomeScreen(authService: widget.authService),
+        ),
+        (_) => false,
+      );
+    }
+  }
+
   @override
   Widget build(BuildContext context) {
     return Scaffold(
@@ -284,7 +310,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             },
           ),
 
-          // Search bar + results dropdown
+          // Search bar + profile button + results dropdown
           Positioned(
             top: MediaQuery.of(context).padding.top + 12,
             left: 16,
@@ -292,7 +318,13 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             child: Column(
               mainAxisSize: MainAxisSize.min,
               children: [
-                _buildSearchBar(),
+                Row(
+                  children: [
+                    Expanded(child: _buildSearchBar()),
+                    const SizedBox(width: 10),
+                    _buildProfileButton(),
+                  ],
+                ),
                 if (_showSearchResults && _searchResults.isNotEmpty)
                   _buildSearchResults(),
               ],
@@ -328,6 +360,28 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
             ),
           ),
         ],
+      ),
+    );
+  }
+
+  Widget _buildProfileButton() {
+    final icon = widget.authService.isLoggedIn
+        ? Icons.person
+        : Icons.login;
+    return Material(
+      elevation: 4,
+      shadowColor: AppColors.primary.withValues(alpha: 0.15),
+      borderRadius: BorderRadius.circular(16),
+      color: Colors.white,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: _openProfileOrWelcome,
+        child: Container(
+          width: 52,
+          height: 52,
+          alignment: Alignment.center,
+          child: Icon(icon, color: AppColors.accent, size: 24),
+        ),
       ),
     );
   }

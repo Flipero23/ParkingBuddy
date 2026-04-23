@@ -1,6 +1,7 @@
 import 'package:flutter/material.dart';
 import '../models/parking_spot.dart';
 import '../services/api_service.dart';
+import '../services/auth_service.dart';
 import '../theme.dart';
 import '../screens/reservation_screen.dart';
 import '../widgets/license_plate_dialog.dart';
@@ -9,6 +10,7 @@ import '../screens/active_session_screen.dart';
 class SpotBottomSheet extends StatelessWidget {
   final ParkingSpot spot;
   final ApiService apiService;
+  final AuthService? authService;
   final VoidCallback onActionComplete;
 
   const SpotBottomSheet({
@@ -16,6 +18,7 @@ class SpotBottomSheet extends StatelessWidget {
     required this.spot,
     required this.apiService,
     required this.onActionComplete,
+    this.authService,
   });
 
   @override
@@ -226,6 +229,7 @@ class SpotBottomSheet extends StatelessWidget {
           builder: (_) => ReservationScreen(
             spot: spot,
             apiService: apiService,
+            authService: authService,
           ),
         ),
       );
@@ -264,6 +268,7 @@ class SpotBottomSheet extends StatelessWidget {
             licensePlate: licensePlate,
             sessionStartTime: session.startTime,
             apiService: apiService,
+            authService: authService,
           ),
         ),
       );

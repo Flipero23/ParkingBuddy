@@ -1,3 +1,14 @@
+CREATE TABLE IF NOT EXISTS users (
+    id SERIAL PRIMARY KEY,
+    phone_number VARCHAR(20) UNIQUE NOT NULL,
+    password VARCHAR(255) NOT NULL,
+    card_number VARCHAR(30),
+    card_expiry VARCHAR(5),
+    cardholder_name VARCHAR(100)
+);
+
+ALTER TABLE parking_sessions ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id);
+
 DELETE FROM parking_sessions;
 
 UPDATE parking_spots SET status = 'available';

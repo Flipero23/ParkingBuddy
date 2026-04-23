@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import '../models/parking_spot.dart';
+import '../services/auth_service.dart';
 import '../theme.dart';
 import 'receipt_screen.dart';
 
@@ -9,6 +10,7 @@ class PaymentScreen extends StatefulWidget {
   final String licensePlate;
   final double totalCost;
   final Duration totalTime;
+  final AuthService? authService;
 
   const PaymentScreen({
     super.key,
@@ -16,6 +18,7 @@ class PaymentScreen extends StatefulWidget {
     required this.licensePlate,
     required this.totalCost,
     required this.totalTime,
+    this.authService,
   });
 
   @override
@@ -32,7 +35,7 @@ class _PaymentScreenState extends State<PaymentScreen>
   late AnimationController _successController;
   late Animation<double> _successScale;
 
-  final _methods = [
+  List<_PaymentMethod> _methods = const [
     _PaymentMethod('Кредитна/Дебитна картичка', Icons.credit_card),
     _PaymentMethod('Apple Pay', Icons.apple),
     _PaymentMethod('Google Pay', Icons.g_mobiledata),
@@ -53,6 +56,29 @@ class _PaymentScreenState extends State<PaymentScreen>
     _successScale = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _successController, curve: Curves.elasticOut),
     );
+
+    _maybeLoadSavedCard();
+  }
+
+  Future<void> _maybeLoadSavedCard() async {
+    final auth = widget.authService;
+    if (auth == null || !auth.isLoggedIn) return;
+    try {
+      final profile = await auth.getProfile();
+      final masked = profile['cardNumber']?.toString();
+      if (!mounted) return;
+      if (masked != null && masked.isNotEmpty) {
+        setState(() {
+          _methods = [
+            _PaymentMethod('Зачувана картичка · $masked', Icons.credit_score),
+            ..._methods,
+          ];
+          _selectedMethod = 0;
+        });
+      }
+    } on Exception {
+      // Non-fatal — user can still pay with other methods
+    }
   }
 
   @override

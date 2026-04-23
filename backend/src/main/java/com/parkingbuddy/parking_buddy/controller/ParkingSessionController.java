@@ -3,6 +3,7 @@ package com.parkingbuddy.parking_buddy.controller;
 import com.parkingbuddy.parking_buddy.entity.ParkingSession;
 import com.parkingbuddy.parking_buddy.entity.ParkingSpot;
 import com.parkingbuddy.parking_buddy.service.ParkingSessionService;
+import jakarta.servlet.http.HttpServletRequest;
 import org.springframework.web.bind.annotation.*;
 import java.util.Map;
 
@@ -23,8 +24,10 @@ public class ParkingSessionController {
 
     @PostMapping("/start/{spotId}")
     public ParkingSession startParking(@PathVariable Integer spotId,
-                                       @RequestParam String licensePlate) {
-        return parkingSessionService.startParking(spotId, licensePlate);
+                                       @RequestParam String licensePlate,
+                                       HttpServletRequest request) {
+        Integer userId = (Integer) request.getAttribute("userId");
+        return parkingSessionService.startParking(spotId, licensePlate, userId);
     }
 
     @PostMapping("/end/{spotId}")

@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/parking_spot.dart';
 import '../services/api_service.dart';
+import '../services/auth_service.dart';
 import '../theme.dart';
 import 'payment_screen.dart';
 
@@ -10,6 +11,7 @@ class ActiveSessionScreen extends StatefulWidget {
   final String licensePlate;
   final DateTime sessionStartTime;
   final ApiService apiService;
+  final AuthService? authService;
 
   const ActiveSessionScreen({
     super.key,
@@ -17,6 +19,7 @@ class ActiveSessionScreen extends StatefulWidget {
     required this.licensePlate,
     required this.sessionStartTime,
     required this.apiService,
+    this.authService,
   });
 
   @override
@@ -81,6 +84,7 @@ class _ActiveSessionScreenState extends State<ActiveSessionScreen>
             licensePlate: widget.licensePlate,
             totalCost: totalCost,
             totalTime: _elapsed,
+            authService: widget.authService,
           ),
         ),
       );

@@ -25,6 +25,9 @@ public class ParkingSession {
     @Column(name = "license_plate")
     private String licensePlate;
 
+    @Column(name = "user_id")
+    private Integer userId;
+
 
     public Integer getId() {
         return id;
@@ -72,5 +75,13 @@ public class ParkingSession {
 
     public void setLicensePlate(String licensePlate) {
         this.licensePlate = licensePlate;
+    }
+
+    public Integer getUserId() {
+        return userId;
+    }
+
+    public void setUserId(Integer userId) {
+        this.userId = userId;
     }
 }

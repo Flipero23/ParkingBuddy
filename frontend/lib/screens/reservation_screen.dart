@@ -2,6 +2,7 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import '../models/parking_spot.dart';
 import '../services/api_service.dart';
+import '../services/auth_service.dart';
 import '../theme.dart';
 import '../widgets/license_plate_dialog.dart';
 import 'active_session_screen.dart';
@@ -9,11 +10,13 @@ import 'active_session_screen.dart';
 class ReservationScreen extends StatefulWidget {
   final ParkingSpot spot;
   final ApiService apiService;
+  final AuthService? authService;
 
   const ReservationScreen({
     super.key,
     required this.spot,
     required this.apiService,
+    this.authService,
   });
 
   @override
@@ -117,6 +120,7 @@ class _ReservationScreenState extends State<ReservationScreen>
             licensePlate: licensePlate,
             sessionStartTime: session.startTime,
             apiService: widget.apiService,
+            authService: widget.authService,
           ),
         ),
       );

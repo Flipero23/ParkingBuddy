@@ -2,13 +2,23 @@ import 'dart:convert';
 import 'package:http/http.dart' as http;
 import '../models/parking_spot.dart';
 import '../models/parking_session.dart';
+import 'auth_service.dart';
 
 class ApiService {
   static const String _baseUrl = 'http://10.0.2.2:8080';
 
   final http.Client _client;
+  final AuthService? _authService;
 
-  ApiService({http.Client? client}) : _client = client ?? http.Client();
+  ApiService({http.Client? client, AuthService? authService})
+      : _client = client ?? http.Client(),
+        _authService = authService;
+
+  Map<String, String> _headers() {
+    final token = _authService?.token;
+    if (token == null) return const {};
+    return {'Authorization': 'Bearer $token'};
+  }
 
   Future<List<ParkingSpot>> getNearbySpots({
     required double lat,
@@ -20,9 +30,7 @@ class ApiService {
       '$_baseUrl/api/spots/nearby?lat=$lat&lon=$lon&radius=$radius&limit=$limit',
     );
 
-
-    final response = await _client.get(uri);
-
+    final response = await _client.get(uri, headers: _headers());
 
     if (response.statusCode == 200) {
       final List<dynamic> data = jsonDecode(response.body) as List<dynamic>;
@@ -39,7 +47,7 @@ class ApiService {
 
   Future<void> reserveSpot(String spotId) async {
     final uri = Uri.parse('$_baseUrl/api/sessions/reserve/$spotId');
-    final response = await _client.post(uri);
+    final response = await _client.post(uri, headers: _headers());
 
     if (response.statusCode != 200 && response.statusCode != 201) {
       throw ApiException('Грешка при резервација', response.statusCode);
@@ -48,7 +56,7 @@ class ApiService {
 
   Future<void> cancelReservation(String spotId) async {
     final uri = Uri.parse('$_baseUrl/api/sessions/cancel/$spotId');
-    final response = await _client.post(uri);
+    final response = await _client.post(uri, headers: _headers());
 
     if (response.statusCode != 200) {
       throw ApiException('Грешка при откажување', response.statusCode);
@@ -62,7 +70,7 @@ class ApiService {
       },
     );
 
-    final response = await _client.post(uri);
+    final response = await _client.post(uri, headers: _headers());
 
     if (response.statusCode == 200 || response.statusCode == 201) {
       return ParkingSession.fromJson(
@@ -75,7 +83,7 @@ class ApiService {
 
   Future<Map<String, dynamic>> endParking(String spotId) async {
     final uri = Uri.parse('$_baseUrl/api/sessions/end/$spotId');
-    final response = await _client.post(uri);
+    final response = await _client.post(uri, headers: _headers());
 
     if (response.statusCode == 200) {
       return jsonDecode(response.body) as Map<String, dynamic>;

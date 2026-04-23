@@ -163,10 +163,10 @@ class _ReceiptScreenState extends State<ReceiptScreen>
     return Padding(
       padding: const EdgeInsets.symmetric(vertical: 8),
       child: Row(
-        mainAxisAlignment: MainAxisAlignment.spaceBetween,
         crossAxisAlignment: CrossAxisAlignment.start,
         children: [
-          Flexible(
+          Expanded(
+            flex: 2,
             child: Text(
               label,
               style: const TextStyle(
@@ -176,12 +176,17 @@ class _ReceiptScreenState extends State<ReceiptScreen>
             ),
           ),
           const SizedBox(width: 12),
-          Text(
-            value,
-            style: TextStyle(
-              fontSize: 14,
-              fontWeight: bold ? FontWeight.w700 : FontWeight.w600,
-              color: bold ? AppColors.primary : AppColors.textPrimary,
+          Expanded(
+            flex: 3,
+            child: Text(
+              value,
+              textAlign: TextAlign.right,
+              softWrap: true,
+              style: TextStyle(
+                fontSize: 14,
+                fontWeight: bold ? FontWeight.w700 : FontWeight.w600,
+                color: bold ? AppColors.primary : AppColors.textPrimary,
+              ),
             ),
           ),
         ],
