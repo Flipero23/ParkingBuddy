@@ -106,7 +106,8 @@ class _PaymentScreenState extends State<PaymentScreen>
     if (!mounted) return;
 
     final txnId = 'TXN-${Random().nextInt(99999999).toString().padLeft(8, '0')}';
-    Navigator.of(context).pushReplacement(
+    final result = await Navigator.push(
+      context,
       MaterialPageRoute(
         builder: (_) => ReceiptScreen(
           spot: widget.spot,
@@ -118,6 +119,8 @@ class _PaymentScreenState extends State<PaymentScreen>
         ),
       ),
     );
+
+    Navigator.pop(context, result);
   }
 
   @override

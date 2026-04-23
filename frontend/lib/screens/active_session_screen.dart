@@ -77,7 +77,7 @@ class _ActiveSessionScreenState extends State<ActiveSessionScreen>
       final result = await widget.apiService.endParking(widget.spot.id);
       if (!mounted) return;
       final totalCost = (result['cost'] as num?)?.toDouble() ?? _currentCost;
-      Navigator.of(context).pushReplacement(
+      final refreshMap = await Navigator.of(context).push(
         MaterialPageRoute(
           builder: (_) => PaymentScreen(
             spot: widget.spot,
@@ -88,6 +88,9 @@ class _ActiveSessionScreenState extends State<ActiveSessionScreen>
           ),
         ),
       );
+
+      if (!mounted) return;
+      Navigator.of(context).pop(refreshMap);
     } on ApiException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(

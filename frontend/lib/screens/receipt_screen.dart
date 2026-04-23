@@ -137,9 +137,7 @@ class _ReceiptScreenState extends State<ReceiptScreen>
                   width: double.infinity,
                   child: ElevatedButton(
                     onPressed: () {
-                      Navigator.of(context).popUntil(
-                        (route) => route.isFirst,
-                      );
+                      Navigator.of(context).pop(true);
                     },
                     style: ElevatedButton.styleFrom(
                       padding: const EdgeInsets.symmetric(vertical: 18),

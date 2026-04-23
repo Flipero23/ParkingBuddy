@@ -119,7 +119,8 @@ class SpotBottomSheet extends StatelessWidget {
                   child: OutlinedButton(
                     onPressed: () => _handleReserve(context),
                     style: OutlinedButton.styleFrom(
-                      side: const BorderSide(color: AppColors.warning, width: 2),
+                      side: const BorderSide(
+                          color: AppColors.warning, width: 2),
                       foregroundColor: AppColors.warning,
                     ),
                     child: const Text('Резервирај'),
@@ -226,11 +227,12 @@ class SpotBottomSheet extends StatelessWidget {
 
       final shouldRefresh = await Navigator.of(context).push<bool>(
         MaterialPageRoute(
-          builder: (_) => ReservationScreen(
-            spot: spot,
-            apiService: apiService,
-            authService: authService,
-          ),
+          builder: (_) =>
+              ReservationScreen(
+                spot: spot,
+                apiService: apiService,
+                authService: authService,
+              ),
         ),
       );
 
@@ -259,9 +261,9 @@ class SpotBottomSheet extends StatelessWidget {
       final session = await apiService.startParking(spot.id, licensePlate);
       if (!context.mounted) return;
 
-      onActionComplete();
+      Navigator.of(context).pop(); // close bottom sheet
 
-      Navigator.of(context).push(
+      final shouldRefresh = await Navigator.of(context).push<bool>(
         MaterialPageRoute(
           builder: (_) => ActiveSessionScreen(
             spot: spot,
@@ -272,6 +274,10 @@ class SpotBottomSheet extends StatelessWidget {
           ),
         ),
       );
+
+      if (shouldRefresh == true) {
+        onActionComplete();
+      }
     } on ApiException catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
