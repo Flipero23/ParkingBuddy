@@ -4,8 +4,7 @@ import '../models/parking_spot.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../theme.dart';
-import '../widgets/license_plate_dialog.dart';
-import 'active_session_screen.dart';
+import '../widgets/spot_bottom_sheet.dart';
 
 class ReservationScreen extends StatefulWidget {
   final ParkingSpot spot;
@@ -101,35 +100,15 @@ class _ReservationScreenState extends State<ReservationScreen>
   }
 
   Future<void> _startParking() async {
-    final licensePlate = await showDialog<String>(
+    await startParkingFlow(
       context: context,
-      builder: (_) => const LicensePlateDialog(),
+      spot: widget.spot,
+      apiService: widget.apiService,
+      authService: widget.authService,
+      onComplete: () {},
+      closeBottomSheet: false,
+      replacePrevious: true,
     );
-    if (licensePlate == null || !mounted) return;
-
-    try {
-      final session = await widget.apiService.startParking(
-        widget.spot.id,
-        licensePlate,
-      );
-      if (!mounted) return;
-      Navigator.of(context).pushReplacement(
-        MaterialPageRoute(
-          builder: (_) => ActiveSessionScreen(
-            spot: widget.spot,
-            licensePlate: licensePlate,
-            sessionStartTime: session.startTime,
-            apiService: widget.apiService,
-            authService: widget.authService,
-          ),
-        ),
-      );
-    } on ApiException catch (e) {
-      if (!mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
-      );
-    }
   }
 
   @override

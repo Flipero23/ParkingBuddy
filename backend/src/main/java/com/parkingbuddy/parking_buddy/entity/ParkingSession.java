@@ -1,6 +1,7 @@
 package com.parkingbuddy.parking_buddy.entity;
 
 import jakarta.persistence.*;
+import java.math.BigDecimal;
 import java.time.LocalDateTime;
 
 @Entity
@@ -27,6 +28,12 @@ public class ParkingSession {
 
     @Column(name = "user_id")
     private Integer userId;
+
+    @Column(name = "duration_hours")
+    private Integer durationHours;
+
+    @Column(name = "paid_amount")
+    private BigDecimal paidAmount;
 
 
     public Integer getId() {
@@ -83,5 +90,21 @@ public class ParkingSession {
 
     public void setUserId(Integer userId) {
         this.userId = userId;
+    }
+
+    public Integer getDurationHours() {
+        return durationHours;
+    }
+
+    public void setDurationHours(Integer durationHours) {
+        this.durationHours = durationHours;
+    }
+
+    public BigDecimal getPaidAmount() {
+        return paidAmount;
+    }
+
+    public void setPaidAmount(BigDecimal paidAmount) {
+        this.paidAmount = paidAmount;
     }
 }

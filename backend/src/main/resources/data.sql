@@ -7,7 +7,12 @@ CREATE TABLE IF NOT EXISTS users (
     cardholder_name VARCHAR(100)
 );
 
+ALTER TABLE users ADD COLUMN IF NOT EXISTS balance NUMERIC(12, 2) DEFAULT 0;
+UPDATE users SET balance = 0 WHERE balance IS NULL;
+
 ALTER TABLE parking_sessions ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES users(id);
+ALTER TABLE parking_sessions ADD COLUMN IF NOT EXISTS duration_hours INTEGER;
+ALTER TABLE parking_sessions ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(12, 2);
 
 DELETE FROM parking_sessions;
 

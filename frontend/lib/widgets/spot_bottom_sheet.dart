@@ -4,7 +4,10 @@ import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../theme.dart';
 import '../screens/reservation_screen.dart';
+import '../screens/payment_screen.dart';
+import '../screens/receipt_screen.dart';
 import '../widgets/license_plate_dialog.dart';
+import '../widgets/duration_picker_dialog.dart';
 import '../screens/active_session_screen.dart';
 
 class SpotBottomSheet extends StatelessWidget {
@@ -32,7 +35,6 @@ class SpotBottomSheet extends StatelessWidget {
       child: Column(
         mainAxisSize: MainAxisSize.min,
         children: [
-          // Drag handle
           Container(
             width: 40,
             height: 4,
@@ -42,8 +44,6 @@ class SpotBottomSheet extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 20),
-
-          // Spot code + status chip
           Row(
             children: [
               Expanded(
@@ -60,8 +60,6 @@ class SpotBottomSheet extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 8),
-
-          // Street name
           Align(
             alignment: Alignment.centerLeft,
             child: Text(
@@ -73,8 +71,6 @@ class SpotBottomSheet extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 20),
-
-          // Info row
           Row(
             children: [
               _buildInfoItem(Icons.location_on_outlined, 'Зона', spot.zone),
@@ -91,8 +87,6 @@ class SpotBottomSheet extends StatelessWidget {
             ],
           ),
           const SizedBox(height: 12),
-
-          // Max duration
           Container(
             width: double.infinity,
             padding: const EdgeInsets.symmetric(vertical: 10, horizontal: 16),
@@ -110,8 +104,6 @@ class SpotBottomSheet extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 24),
-
-          // Action buttons
           if (spot.isAvailable) ...[
             Row(
               children: [
@@ -227,48 +219,8 @@ class SpotBottomSheet extends StatelessWidget {
 
       final shouldRefresh = await Navigator.of(context).push<bool>(
         MaterialPageRoute(
-          builder: (_) =>
-              ReservationScreen(
-                spot: spot,
-                apiService: apiService,
-                authService: authService,
-              ),
-        ),
-      );
-
-      if (shouldRefresh == true) {
-        onActionComplete();
-      }
-    } on ApiException catch (e) {
-      if (!context.mounted) return;
-      ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(e.message),
-          backgroundColor: AppColors.danger,
-        ),
-      );
-    }
-  }
-
-  Future<void> _handleStartParking(BuildContext context) async {
-    final licensePlate = await showDialog<String>(
-      context: context,
-      builder: (_) => const LicensePlateDialog(),
-    );
-    if (licensePlate == null || !context.mounted) return;
-
-    try {
-      final session = await apiService.startParking(spot.id, licensePlate);
-      if (!context.mounted) return;
-
-      Navigator.of(context).pop(); // close bottom sheet
-
-      final shouldRefresh = await Navigator.of(context).push<bool>(
-        MaterialPageRoute(
-          builder: (_) => ActiveSessionScreen(
+          builder: (_) => ReservationScreen(
             spot: spot,
-            licensePlate: licensePlate,
-            sessionStartTime: session.startTime,
             apiService: apiService,
             authService: authService,
           ),
@@ -287,5 +239,124 @@ class SpotBottomSheet extends StatelessWidget {
         ),
       );
     }
+  }
+
+  Future<void> _handleStartParking(BuildContext context) async {
+    await startParkingFlow(
+      context: context,
+      spot: spot,
+      apiService: apiService,
+      authService: authService,
+      onComplete: () {
+        onActionComplete();
+      },
+    );
+  }
+}
+
+/// Shared prepaid parking flow:
+/// 1. License plate dialog
+/// 2. Duration picker (1h or 2h)
+/// 3. Payment screen (wallet for logged-in, mock for guests)
+/// 4. Receipt screen
+/// 5. Start parking on backend
+/// 6. Navigate to active session
+Future<void> startParkingFlow({
+  required BuildContext context,
+  required ParkingSpot spot,
+  required ApiService apiService,
+  required AuthService? authService,
+  required VoidCallback onComplete,
+  bool closeBottomSheet = true,
+  bool replacePrevious = false,
+}) async {
+  final licensePlate = await showDialog<String>(
+    context: context,
+    builder: (_) => const LicensePlateDialog(),
+  );
+  if (licensePlate == null || !context.mounted) return;
+
+  final durationHours = await showDialog<int>(
+    context: context,
+    builder: (_) => DurationPickerDialog(pricePerHour: spot.pricePerHour),
+  );
+  if (durationHours == null || !context.mounted) return;
+
+  final totalCost = spot.pricePerHour * durationHours;
+
+  final paymentResult = await Navigator.of(context).push<PaymentResult>(
+    MaterialPageRoute(
+      builder: (_) => PaymentScreen(
+        spot: spot,
+        licensePlate: licensePlate,
+        durationHours: durationHours,
+        totalCost: totalCost,
+        authService: authService,
+      ),
+    ),
+  );
+  if (paymentResult == null || !context.mounted) return;
+
+  try {
+    final session = await apiService.startParking(
+      spot.id,
+      licensePlate,
+      durationHours: durationHours,
+    );
+    if (!context.mounted) return;
+
+    // Backend may have deducted wallet balance — refresh cached profile.
+    if (authService?.isLoggedIn == true) {
+      try {
+        await authService!.getProfile();
+      } on AuthException {
+        // Non-fatal — continue with stale cached balance.
+      }
+      if (!context.mounted) return;
+    }
+
+    // Show receipt for the prepaid amount.
+    await Navigator.of(context).push(
+      MaterialPageRoute(
+        builder: (_) => ReceiptScreen(
+          spot: spot,
+          licensePlate: licensePlate,
+          totalCost: totalCost,
+          totalTime: Duration(hours: durationHours),
+          paymentMethod: paymentResult.paymentMethod,
+          transactionId: paymentResult.transactionId,
+        ),
+      ),
+    );
+    if (!context.mounted) return;
+
+    if (closeBottomSheet && Navigator.of(context).canPop()) {
+      Navigator.of(context).pop(); // close source (bottom sheet / reservation)
+    }
+
+    final route = MaterialPageRoute<bool>(
+      builder: (_) => ActiveSessionScreen(
+        spot: spot,
+        licensePlate: licensePlate,
+        sessionStartTime: session.startTime,
+        durationHours: session.durationHours ?? durationHours,
+        paidAmount: session.paidAmount ?? totalCost,
+        apiService: apiService,
+        authService: authService,
+      ),
+    );
+
+    final shouldRefresh = replacePrevious
+        ? await Navigator.of(context).pushReplacement<bool, bool>(route)
+        : await Navigator.of(context).push<bool>(route);
+
+    onComplete();
+    // shouldRefresh is currently informational — listeners always refresh.
+    if (shouldRefresh == false) return;
+  } on ApiException catch (e) {
+    if (!context.mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
+    );
   }
 }

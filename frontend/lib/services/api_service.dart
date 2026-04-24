@@ -63,10 +63,15 @@ class ApiService {
     }
   }
 
-  Future<ParkingSession> startParking(String spotId, String licensePlate) async {
+  Future<ParkingSession> startParking(
+    String spotId,
+    String licensePlate, {
+    required int durationHours,
+  }) async {
     final uri = Uri.parse('$_baseUrl/api/sessions/start/$spotId').replace(
       queryParameters: {
         'licensePlate': licensePlate,
+        'durationHours': durationHours.toString(),
       },
     );
 
@@ -78,7 +83,26 @@ class ApiService {
       );
     }
 
-    throw ApiException('Грешка при започнување паркирање', response.statusCode);
+    throw ApiException(
+      _extractError(response.body, 'Грешка при започнување паркирање'),
+      response.statusCode,
+    );
+  }
+
+  Future<ParkingSession> extendParking(String spotId) async {
+    final uri = Uri.parse('$_baseUrl/api/sessions/extend/$spotId');
+    final response = await _client.post(uri, headers: _headers());
+
+    if (response.statusCode == 200 || response.statusCode == 201) {
+      return ParkingSession.fromJson(
+        jsonDecode(response.body) as Map<String, dynamic>,
+      );
+    }
+
+    throw ApiException(
+      _extractError(response.body, 'Грешка при продолжување паркирање'),
+      response.statusCode,
+    );
   }
 
   Future<Map<String, dynamic>> endParking(String spotId) async {
@@ -90,6 +114,18 @@ class ApiService {
     }
 
     throw ApiException('Грешка при завршување паркирање', response.statusCode);
+  }
+
+  String _extractError(String body, String fallback) {
+    try {
+      final decoded = jsonDecode(body);
+      if (decoded is Map && decoded['message'] is String) {
+        return decoded['message'] as String;
+      }
+    } on FormatException {
+      // Not JSON — fall back
+    }
+    return fallback;
   }
 
   void dispose() {

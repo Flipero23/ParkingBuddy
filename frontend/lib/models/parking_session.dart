@@ -6,6 +6,8 @@ class ParkingSession {
   final DateTime startTime;
   final DateTime? endTime;
   final double? totalCost;
+  final int? durationHours;
+  final double? paidAmount;
 
   const ParkingSession({
     required this.id,
@@ -15,12 +17,14 @@ class ParkingSession {
     required this.startTime,
     this.endTime,
     this.totalCost,
+    this.durationHours,
+    this.paidAmount,
   });
 
   factory ParkingSession.fromJson(Map<String, dynamic> json) {
     return ParkingSession(
       id: json['id']?.toString() ?? '',
-      spotId: json['spotId']?.toString() ?? '',
+      spotId: (json['spotId'] ?? json['parkingSpotId'])?.toString() ?? '',
       licensePlate: json['licensePlate']?.toString() ?? '',
       status: json['status']?.toString() ?? '',
       startTime: json['startTime'] != null
@@ -30,6 +34,8 @@ class ParkingSession {
           ? DateTime.parse(json['endTime'].toString())
           : null,
       totalCost: (json['totalCost'] as num?)?.toDouble(),
+      durationHours: (json['durationHours'] as num?)?.toInt(),
+      paidAmount: (json['paidAmount'] as num?)?.toDouble(),
     );
   }
 }

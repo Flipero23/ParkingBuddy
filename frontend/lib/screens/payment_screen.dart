@@ -5,20 +5,42 @@ import '../services/auth_service.dart';
 import '../theme.dart';
 import 'receipt_screen.dart';
 
+/// Upfront payment for a selected parking duration.
+/// - Logged-in users pay from their wallet balance.
+/// - Guests pay via a mock payment method.
+///
+/// On success returns a [PaymentResult] via Navigator.pop so the caller
+/// (spot bottom sheet / reservation screen) can then start the parking
+/// session with the paid [durationHours].
+class PaymentResult {
+  final String paymentMethod;
+  final String transactionId;
+
+  const PaymentResult({
+    required this.paymentMethod,
+    required this.transactionId,
+  });
+}
+
 class PaymentScreen extends StatefulWidget {
   final ParkingSpot spot;
   final String licensePlate;
+  final int durationHours;
   final double totalCost;
-  final Duration totalTime;
   final AuthService? authService;
+
+  /// When true, the receipt screen is shown after a successful payment.
+  /// Used by the extend-session flow where no new session start follows.
+  final bool showReceiptOnSuccess;
 
   const PaymentScreen({
     super.key,
     required this.spot,
     required this.licensePlate,
+    required this.durationHours,
     required this.totalCost,
-    required this.totalTime,
     this.authService,
+    this.showReceiptOnSuccess = false,
   });
 
   @override
@@ -30,16 +52,24 @@ class _PaymentScreenState extends State<PaymentScreen>
   int _selectedMethod = 0;
   bool _isProcessing = false;
   bool _isSuccess = false;
+  String? _errorMessage;
 
   late AnimationController _fadeController;
   late AnimationController _successController;
   late Animation<double> _successScale;
 
-  List<_PaymentMethod> _methods = const [
+  // Guest mock methods. Logged-in users use wallet only.
+  final List<_PaymentMethod> _guestMethods = const [
     _PaymentMethod('Кредитна/Дебитна картичка', Icons.credit_card),
     _PaymentMethod('Apple Pay', Icons.apple),
     _PaymentMethod('Google Pay', Icons.g_mobiledata),
   ];
+
+  bool get _isLoggedIn => widget.authService?.isLoggedIn == true;
+
+  double get _balance => widget.authService?.balance ?? 0.0;
+
+  bool get _hasSufficientBalance => _balance >= widget.totalCost;
 
   @override
   void initState() {
@@ -56,29 +86,6 @@ class _PaymentScreenState extends State<PaymentScreen>
     _successScale = Tween<double>(begin: 0.0, end: 1.0).animate(
       CurvedAnimation(parent: _successController, curve: Curves.elasticOut),
     );
-
-    _maybeLoadSavedCard();
-  }
-
-  Future<void> _maybeLoadSavedCard() async {
-    final auth = widget.authService;
-    if (auth == null || !auth.isLoggedIn) return;
-    try {
-      final profile = await auth.getProfile();
-      final masked = profile['cardNumber']?.toString();
-      if (!mounted) return;
-      if (masked != null && masked.isNotEmpty) {
-        setState(() {
-          _methods = [
-            _PaymentMethod('Зачувана картичка · $masked', Icons.credit_score),
-            ..._methods,
-          ];
-          _selectedMethod = 0;
-        });
-      }
-    } on Exception {
-      // Non-fatal — user can still pay with other methods
-    }
   }
 
   @override
@@ -89,9 +96,20 @@ class _PaymentScreenState extends State<PaymentScreen>
   }
 
   Future<void> _pay() async {
-    setState(() => _isProcessing = true);
+    if (_isLoggedIn && !_hasSufficientBalance) {
+      setState(() {
+        _errorMessage =
+            'Немате доволно средства во паричникот. Надополнете прво.';
+      });
+      return;
+    }
 
-    // Simulated delay
+    setState(() {
+      _isProcessing = true;
+      _errorMessage = null;
+    });
+
+    // Simulated payment delay — no real gateway.
     await Future.delayed(const Duration(seconds: 2));
     if (!mounted) return;
 
@@ -101,26 +119,36 @@ class _PaymentScreenState extends State<PaymentScreen>
     });
     _successController.forward();
 
-    // Navigate to receipt after animation
-    await Future.delayed(const Duration(milliseconds: 1500));
+    await Future.delayed(const Duration(milliseconds: 1200));
     if (!mounted) return;
 
-    final txnId = 'TXN-${Random().nextInt(99999999).toString().padLeft(8, '0')}';
-    final result = await Navigator.push(
-      context,
-      MaterialPageRoute(
-        builder: (_) => ReceiptScreen(
-          spot: widget.spot,
-          licensePlate: widget.licensePlate,
-          totalCost: widget.totalCost,
-          totalTime: widget.totalTime,
-          paymentMethod: _methods[_selectedMethod].label,
-          transactionId: txnId,
-        ),
-      ),
+    final method = _isLoggedIn
+        ? 'Паричник'
+        : _guestMethods[_selectedMethod].label;
+    final txnId =
+        'TXN-${Random().nextInt(99999999).toString().padLeft(8, '0')}';
+    final result = PaymentResult(
+      paymentMethod: method,
+      transactionId: txnId,
     );
 
-    Navigator.pop(context, result);
+    if (widget.showReceiptOnSuccess) {
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ReceiptScreen(
+            spot: widget.spot,
+            licensePlate: widget.licensePlate,
+            totalCost: widget.totalCost,
+            totalTime: Duration(hours: widget.durationHours),
+            paymentMethod: method,
+            transactionId: txnId,
+          ),
+        ),
+      );
+      if (!mounted) return;
+    }
+
+    Navigator.of(context).pop(result);
   }
 
   @override
@@ -133,12 +161,15 @@ class _PaymentScreenState extends State<PaymentScreen>
       appBar: AppBar(
         backgroundColor: Colors.transparent,
         elevation: 0,
+        leading: IconButton(
+          icon: const Icon(Icons.arrow_back, color: AppColors.textPrimary),
+          onPressed: () => Navigator.of(context).pop(),
+        ),
         title: const Text(
           'Плаќање',
           style: TextStyle(color: AppColors.textPrimary),
         ),
         centerTitle: true,
-        automaticallyImplyLeading: false,
       ),
       body: FadeTransition(
         opacity: CurvedAnimation(
@@ -149,7 +180,6 @@ class _PaymentScreenState extends State<PaymentScreen>
           padding: const EdgeInsets.all(24),
           child: Column(
             children: [
-              // Total cost card
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(28),
@@ -171,103 +201,40 @@ class _PaymentScreenState extends State<PaymentScreen>
                           color: AppColors.primary,
                         ),
                       ),
+                      const SizedBox(height: 4),
+                      Text(
+                        'Траење: ${widget.durationHours} ч',
+                        style: const TextStyle(
+                          fontSize: 14,
+                          color: AppColors.textSecondary,
+                        ),
+                      ),
                     ],
                   ),
                 ),
               ),
-
               const SizedBox(height: 24),
-
-              // Payment methods
-              const Align(
-                alignment: Alignment.centerLeft,
-                child: Text(
-                  'Начин на плаќање',
-                  style: TextStyle(
-                    fontSize: 16,
-                    fontWeight: FontWeight.w600,
-                    color: AppColors.textPrimary,
-                  ),
-                ),
-              ),
-              const SizedBox(height: 12),
-
-              ...List.generate(_methods.length, (index) {
-                final method = _methods[index];
-                final isSelected = _selectedMethod == index;
-                return Padding(
-                  padding: const EdgeInsets.only(bottom: 10),
-                  child: GestureDetector(
-                    onTap: () => setState(() => _selectedMethod = index),
-                    child: AnimatedContainer(
-                      duration: const Duration(milliseconds: 200),
-                      padding: const EdgeInsets.all(16),
-                      decoration: BoxDecoration(
-                        color: Colors.white,
-                        borderRadius: BorderRadius.circular(16),
-                        border: Border.all(
-                          color: isSelected
-                              ? AppColors.accent
-                              : Colors.grey.shade200,
-                          width: isSelected ? 2 : 1,
-                        ),
-                        boxShadow: isSelected
-                            ? [
-                                BoxShadow(
-                                  color: AppColors.accent.withValues(alpha: 0.15),
-                                  blurRadius: 8,
-                                  offset: const Offset(0, 2),
-                                ),
-                              ]
-                            : [],
-                      ),
-                      child: Row(
-                        children: [
-                          Icon(
-                            method.icon,
-                            color: isSelected
-                                ? AppColors.accent
-                                : AppColors.textSecondary,
-                            size: 28,
-                          ),
-                          const SizedBox(width: 16),
-                          Expanded(
-                            child: Text(
-                              method.label,
-                              style: TextStyle(
-                                fontSize: 15,
-                                fontWeight: isSelected
-                                    ? FontWeight.w600
-                                    : FontWeight.w400,
-                                color: AppColors.textPrimary,
-                              ),
-                            ),
-                          ),
-                          if (isSelected)
-                            const Icon(
-                              Icons.check_circle,
-                              color: AppColors.accent,
-                            ),
-                        ],
-                      ),
-                    ),
-                  ),
-                );
-              }),
-
+              if (_isLoggedIn) _buildWalletSection() else _buildGuestMethods(),
+              if (_errorMessage != null) ...[
+                const SizedBox(height: 12),
+                _buildErrorBanner(_errorMessage!),
+              ],
               const Spacer(),
-
-              // Pay button
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: _pay,
+                  onPressed: (_isLoggedIn && !_hasSufficientBalance)
+                      ? null
+                      : _pay,
                   style: ElevatedButton.styleFrom(
                     padding: const EdgeInsets.symmetric(vertical: 18),
+                    disabledBackgroundColor:
+                        AppColors.accent.withValues(alpha: 0.3),
+                    disabledForegroundColor: Colors.white60,
                   ),
-                  child: const Text(
-                    'Плати сега',
-                    style: TextStyle(fontSize: 18),
+                  child: Text(
+                    _isLoggedIn ? 'Плати од паричник' : 'Плати сега',
+                    style: const TextStyle(fontSize: 18),
                   ),
                 ),
               ),
@@ -279,14 +246,172 @@ class _PaymentScreenState extends State<PaymentScreen>
     );
   }
 
+  Widget _buildWalletSection() {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(20),
+      decoration: BoxDecoration(
+        color: Colors.white,
+        borderRadius: BorderRadius.circular(16),
+        border: Border.all(
+          color: _hasSufficientBalance
+              ? AppColors.accent
+              : AppColors.danger.withValues(alpha: 0.6),
+          width: 1.5,
+        ),
+      ),
+      child: Row(
+        children: [
+          Container(
+            padding: const EdgeInsets.all(12),
+            decoration: BoxDecoration(
+              color: AppColors.secondary,
+              borderRadius: BorderRadius.circular(12),
+            ),
+            child: const Icon(
+              Icons.account_balance_wallet_outlined,
+              color: AppColors.primary,
+            ),
+          ),
+          const SizedBox(width: 14),
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                const Text(
+                  'Паричник',
+                  style: TextStyle(
+                    fontSize: 13,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+                const SizedBox(height: 4),
+                Text(
+                  '${_balance.toStringAsFixed(0)} МКД',
+                  style: const TextStyle(
+                    fontSize: 20,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.textPrimary,
+                  ),
+                ),
+              ],
+            ),
+          ),
+          if (_hasSufficientBalance)
+            const Icon(Icons.check_circle, color: AppColors.accent)
+          else
+            const Icon(Icons.error_outline, color: AppColors.danger),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildGuestMethods() {
+    return Column(
+      children: [
+        const Align(
+          alignment: Alignment.centerLeft,
+          child: Text(
+            'Начин на плаќање',
+            style: TextStyle(
+              fontSize: 16,
+              fontWeight: FontWeight.w600,
+              color: AppColors.textPrimary,
+            ),
+          ),
+        ),
+        const SizedBox(height: 12),
+        ...List.generate(_guestMethods.length, (index) {
+          final method = _guestMethods[index];
+          final isSelected = _selectedMethod == index;
+          return Padding(
+            padding: const EdgeInsets.only(bottom: 10),
+            child: GestureDetector(
+              onTap: () => setState(() => _selectedMethod = index),
+              child: AnimatedContainer(
+                duration: const Duration(milliseconds: 200),
+                padding: const EdgeInsets.all(16),
+                decoration: BoxDecoration(
+                  color: Colors.white,
+                  borderRadius: BorderRadius.circular(16),
+                  border: Border.all(
+                    color: isSelected
+                        ? AppColors.accent
+                        : Colors.grey.shade200,
+                    width: isSelected ? 2 : 1,
+                  ),
+                ),
+                child: Row(
+                  children: [
+                    Icon(
+                      method.icon,
+                      color: isSelected
+                          ? AppColors.accent
+                          : AppColors.textSecondary,
+                      size: 28,
+                    ),
+                    const SizedBox(width: 16),
+                    Expanded(
+                      child: Text(
+                        method.label,
+                        style: TextStyle(
+                          fontSize: 15,
+                          fontWeight:
+                              isSelected ? FontWeight.w600 : FontWeight.w400,
+                          color: AppColors.textPrimary,
+                        ),
+                      ),
+                    ),
+                    if (isSelected)
+                      const Icon(
+                        Icons.check_circle,
+                        color: AppColors.accent,
+                      ),
+                  ],
+                ),
+              ),
+            ),
+          );
+        }),
+      ],
+    );
+  }
+
+  Widget _buildErrorBanner(String message) {
+    return Container(
+      width: double.infinity,
+      padding: const EdgeInsets.all(12),
+      decoration: BoxDecoration(
+        color: AppColors.danger.withValues(alpha: 0.1),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Row(
+        children: [
+          const Icon(Icons.info_outline, color: AppColors.danger, size: 20),
+          const SizedBox(width: 8),
+          Expanded(
+            child: Text(
+              message,
+              style: const TextStyle(
+                color: AppColors.danger,
+                fontSize: 13,
+                fontWeight: FontWeight.w500,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+
   Widget _buildProcessing() {
-    return Scaffold(
+    return const Scaffold(
       backgroundColor: AppColors.background,
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            const SizedBox(
+            SizedBox(
               width: 56,
               height: 56,
               child: CircularProgressIndicator(
@@ -294,8 +419,8 @@ class _PaymentScreenState extends State<PaymentScreen>
                 strokeWidth: 3,
               ),
             ),
-            const SizedBox(height: 24),
-            const Text(
+            SizedBox(height: 24),
+            Text(
               'Плаќањето е во тек...',
               style: TextStyle(
                 fontSize: 18,

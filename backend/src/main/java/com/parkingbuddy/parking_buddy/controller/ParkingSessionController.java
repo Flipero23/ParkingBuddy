@@ -25,9 +25,17 @@ public class ParkingSessionController {
     @PostMapping("/start/{spotId}")
     public ParkingSession startParking(@PathVariable Integer spotId,
                                        @RequestParam String licensePlate,
+                                       @RequestParam(defaultValue = "1") Integer durationHours,
                                        HttpServletRequest request) {
         Integer userId = (Integer) request.getAttribute("userId");
-        return parkingSessionService.startParking(spotId, licensePlate, userId);
+        return parkingSessionService.startParking(spotId, licensePlate, userId, durationHours);
+    }
+
+    @PostMapping("/extend/{spotId}")
+    public ParkingSession extendParking(@PathVariable Integer spotId,
+                                        HttpServletRequest request) {
+        Integer userId = (Integer) request.getAttribute("userId");
+        return parkingSessionService.extendParking(spotId, userId);
     }
 
     @PostMapping("/end/{spotId}")
