@@ -17,7 +17,12 @@ ALTER TABLE parking_sessions ADD COLUMN IF NOT EXISTS user_id INTEGER REFERENCES
 ALTER TABLE parking_sessions ADD COLUMN IF NOT EXISTS duration_hours INTEGER;
 ALTER TABLE parking_sessions ADD COLUMN IF NOT EXISTS paid_amount NUMERIC(12, 2);
 
-DELETE FROM parking_sessions;
+-- Preserve session history per user across restarts.
+-- Close out any leftover active sessions so randomized spot state stays consistent.
+UPDATE parking_sessions
+SET status = 'completed',
+    end_time = COALESCE(end_time, NOW())
+WHERE status = 'active';
 
 UPDATE parking_spots SET status = 'available';
 

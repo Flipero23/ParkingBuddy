@@ -3,6 +3,7 @@ import 'package:flutter/material.dart';
 import '../models/parking_spot.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
+import '../services/notification_service.dart';
 import '../theme.dart';
 import 'payment_screen.dart';
 
@@ -50,7 +51,12 @@ class _ActiveSessionScreenState extends State<ActiveSessionScreen>
       duration: const Duration(milliseconds: 600),
     )..forward();
 
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      _scheduleExpiryWarning();
+    });
+
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted) return;
       final now = DateTime.now();
       final elapsed = now.difference(widget.sessionStartTime);
       setState(() => _elapsed = elapsed);
@@ -60,6 +66,16 @@ class _ActiveSessionScreenState extends State<ActiveSessionScreen>
         _endParking();
       }
     });
+  }
+
+  void _scheduleExpiryWarning() {
+    final endTime = widget.sessionStartTime.add(
+      Duration(hours: _durationHours),
+    );
+    final warningTime = endTime.subtract(const Duration(minutes: 15));
+    unawaited(
+      NotificationService.instance.scheduleExpiryWarning(warningTime),
+    );
   }
 
   @override
@@ -94,6 +110,7 @@ class _ActiveSessionScreenState extends State<ActiveSessionScreen>
   Future<void> _endParking() async {
     try {
       await widget.apiService.endParking(widget.spot.id);
+      unawaited(NotificationService.instance.cancelExpiryWarning());
       if (!mounted) return;
       Navigator.of(context).pop(true);
     } on ApiException catch (e) {
@@ -130,6 +147,7 @@ class _ActiveSessionScreenState extends State<ActiveSessionScreen>
         _durationHours = updated.durationHours ?? _durationHours + 1;
         _paidAmount = updated.paidAmount ?? _paidAmount + extraCost;
       });
+      _scheduleExpiryWarning();
       if (widget.authService?.isLoggedIn == true) {
         try {
           await widget.authService!.getProfile();

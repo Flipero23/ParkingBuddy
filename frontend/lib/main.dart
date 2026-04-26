@@ -3,9 +3,10 @@ import 'package:flutter/services.dart';
 import 'screens/map_screen.dart';
 import 'screens/welcome_screen.dart';
 import 'services/auth_service.dart';
+import 'services/notification_service.dart';
 import 'theme.dart';
 
-void main() {
+Future<void> main() async {
   WidgetsFlutterBinding.ensureInitialized();
   SystemChrome.setSystemUIOverlayStyle(
     const SystemUiOverlayStyle(
@@ -13,6 +14,7 @@ void main() {
       statusBarIconBrightness: Brightness.dark,
     ),
   );
+  await NotificationService.instance.initialize();
   runApp(const ParkingBuddyApp());
 }
 
