@@ -405,13 +405,31 @@ class _PaymentScreenState extends State<PaymentScreen>
   }
 
   Widget _buildProcessing() {
-    return const Scaffold(
+    return const PaymentProcessingView();
+  }
+
+  Widget _buildSuccess() {
+    return PaymentSuccessView(scale: _successScale);
+  }
+}
+
+class PaymentProcessingView extends StatelessWidget {
+  final String message;
+
+  const PaymentProcessingView({
+    super.key,
+    this.message = 'Плаќањето е во тек...',
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Scaffold(
       backgroundColor: AppColors.background,
       body: Center(
         child: Column(
           mainAxisSize: MainAxisSize.min,
           children: [
-            SizedBox(
+            const SizedBox(
               width: 56,
               height: 56,
               child: CircularProgressIndicator(
@@ -419,10 +437,10 @@ class _PaymentScreenState extends State<PaymentScreen>
                 strokeWidth: 3,
               ),
             ),
-            SizedBox(height: 24),
+            const SizedBox(height: 24),
             Text(
-              'Плаќањето е во тек...',
-              style: TextStyle(
+              message,
+              style: const TextStyle(
                 fontSize: 18,
                 color: AppColors.textSecondary,
               ),
@@ -432,13 +450,27 @@ class _PaymentScreenState extends State<PaymentScreen>
       ),
     );
   }
+}
 
-  Widget _buildSuccess() {
+class PaymentSuccessView extends StatelessWidget {
+  final Animation<double> scale;
+  final String title;
+  final String? subtitle;
+
+  const PaymentSuccessView({
+    super.key,
+    required this.scale,
+    this.title = 'Успешно плаќање',
+    this.subtitle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.background,
       body: Center(
         child: ScaleTransition(
-          scale: _successScale,
+          scale: scale,
           child: Column(
             mainAxisSize: MainAxisSize.min,
             children: [
@@ -463,14 +495,24 @@ class _PaymentScreenState extends State<PaymentScreen>
                 ),
               ),
               const SizedBox(height: 24),
-              const Text(
-                'Успешно плаќање',
-                style: TextStyle(
+              Text(
+                title,
+                style: const TextStyle(
                   fontSize: 22,
                   fontWeight: FontWeight.w700,
                   color: AppColors.textPrimary,
                 ),
               ),
+              if (subtitle != null) ...[
+                const SizedBox(height: 8),
+                Text(
+                  subtitle!,
+                  style: const TextStyle(
+                    fontSize: 15,
+                    color: AppColors.textSecondary,
+                  ),
+                ),
+              ],
             ],
           ),
         ),
