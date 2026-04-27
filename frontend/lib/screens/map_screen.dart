@@ -4,6 +4,7 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import '../models/active_session.dart';
 import '../models/parking_spot.dart';
+import '../services/active_session_storage.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../theme.dart';
@@ -73,7 +74,38 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         setState(() => _showSearchResults = false);
       }
     });
+    unawaited(_restoreActiveSession());
     _initLocation();
+  }
+
+  Future<void> _restoreActiveSession() async {
+    final session = await ActiveSessionStorage.load();
+    if (!mounted || session == null) return;
+
+    // Drop sessions that already ran their course while the app was closed.
+    final endsAt = session.startTime.add(
+      Duration(hours: session.durationHours),
+    );
+    if (!DateTime.now().isBefore(endsAt)) {
+      unawaited(ActiveSessionStorage.clear());
+      return;
+    }
+
+    _activeSessionElapsed.value = DateTime.now().difference(session.startTime);
+    setState(() {
+      _activeSession = session;
+      _markers = {_buildActiveSessionMarker(session)};
+    });
+    _startActiveSessionTicker();
+
+    if (_mapReady) {
+      _mapController?.animateCamera(
+        CameraUpdate.newLatLngZoom(
+          LatLng(session.spot.latitude, session.spot.longitude),
+          17,
+        ),
+      );
+    }
   }
 
   @override
@@ -190,11 +222,21 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     _mapController = controller;
     _mapReady = true;
 
-    final pos = _currentPosition;
-    if (pos != null) {
+    final session = _activeSession;
+    if (session != null) {
       controller.animateCamera(
-        CameraUpdate.newLatLng(LatLng(pos.latitude, pos.longitude)),
+        CameraUpdate.newLatLngZoom(
+          LatLng(session.spot.latitude, session.spot.longitude),
+          17,
+        ),
       );
+    } else {
+      final pos = _currentPosition;
+      if (pos != null) {
+        controller.animateCamera(
+          CameraUpdate.newLatLng(LatLng(pos.latitude, pos.longitude)),
+        );
+      }
     }
 
     WidgetsBinding.instance.addPostFrameCallback((_) {
@@ -246,6 +288,16 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         limit: 100,
       );
       if (!mounted) return;
+      // Active session may have been restored while we were fetching —
+      // don't clobber the parked-car marker with the spot grid.
+      if (_activeSession != null) {
+        setState(() {
+          _spots = spots;
+          _markers = {_buildActiveSessionMarker(_activeSession!)};
+          _isLoading = false;
+        });
+        return;
+      }
       setState(() {
         _spots = spots;
         _markers = _buildMarkers(spots);
@@ -302,6 +354,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       _activeSession = session;
       _markers = {_buildActiveSessionMarker(session)};
     });
+    unawaited(ActiveSessionStorage.save(session));
     _startActiveSessionTicker();
 
     _mapController?.animateCamera(
@@ -345,12 +398,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           authService: widget.authService,
           onSessionUpdated: (durationHours, paidAmount) {
             if (!mounted || _activeSession == null) return;
+            final updated = _activeSession!.copyWith(
+              durationHours: durationHours,
+              paidAmount: paidAmount,
+            );
             setState(() {
-              _activeSession = _activeSession!.copyWith(
-                durationHours: durationHours,
-                paidAmount: paidAmount,
-              );
+              _activeSession = updated;
             });
+            unawaited(ActiveSessionStorage.save(updated));
           },
         ),
       ),
@@ -370,6 +425,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     setState(() {
       _activeSession = null;
     });
+    unawaited(ActiveSessionStorage.clear());
 
     // Restore normal markers around the user's current location.
     if (_currentPosition != null) {

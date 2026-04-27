@@ -38,6 +38,19 @@ class ParkingSpot {
     );
   }
 
+  Map<String, dynamic> toJson() => {
+    'id': id,
+    'code': code,
+    'streetName': streetName,
+    'zone': zone,
+    'latitude': latitude,
+    'longitude': longitude,
+    'distance': distance,
+    'pricePerHour': pricePerHour,
+    'maxDurationMinutes': maxDurationMinutes,
+    'status': status,
+  };
+
   bool get isAvailable => status.toLowerCase() == 'available';
   bool get isReserved => status.toLowerCase() == 'reserved';
   bool get isOccupied => status.toLowerCase() == 'occupied';

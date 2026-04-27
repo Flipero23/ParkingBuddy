@@ -11,7 +11,7 @@ import '../widgets/license_plate_dialog.dart';
 import '../widgets/duration_picker_dialog.dart';
 import '../screens/active_session_screen.dart';
 
-class SpotBottomSheet extends StatelessWidget {
+class SpotBottomSheet extends StatefulWidget {
   final ParkingSpot spot;
   final ApiService apiService;
   final AuthService? authService;
@@ -31,6 +31,17 @@ class SpotBottomSheet extends StatelessWidget {
     this.authService,
     this.onActiveSessionStarted,
   });
+
+  @override
+  State<SpotBottomSheet> createState() => _SpotBottomSheetState();
+}
+
+class _SpotBottomSheetState extends State<SpotBottomSheet> {
+  // Disables both action buttons while a reserve/start request is in flight.
+  // Prevents double-taps from racing each other on the same spot.
+  bool _isProcessing = false;
+
+  ParkingSpot get _spot => widget.spot;
 
   @override
   Widget build(BuildContext context) {
@@ -56,7 +67,7 @@ class SpotBottomSheet extends StatelessWidget {
             children: [
               Expanded(
                 child: Text(
-                  spot.code,
+                  _spot.code,
                   style: const TextStyle(
                     fontSize: 24,
                     fontWeight: FontWeight.w700,
@@ -71,7 +82,7 @@ class SpotBottomSheet extends StatelessWidget {
           Align(
             alignment: Alignment.centerLeft,
             child: Text(
-              spot.streetName,
+              _spot.streetName,
               style: const TextStyle(
                 fontSize: 16,
                 color: AppColors.textSecondary,
@@ -81,16 +92,16 @@ class SpotBottomSheet extends StatelessWidget {
           const SizedBox(height: 20),
           Row(
             children: [
-              _buildInfoItem(Icons.location_on_outlined, 'Зона', spot.zone),
+              _buildInfoItem(Icons.location_on_outlined, 'Зона', _spot.zone),
               _buildInfoItem(
                 Icons.straighten,
                 'Растојание',
-                '${spot.distance.toStringAsFixed(0)} м',
+                '${_spot.distance.toStringAsFixed(0)} м',
               ),
               _buildInfoItem(
                 Icons.attach_money,
                 'Цена по час',
-                '${spot.pricePerHour.toStringAsFixed(0)} МКД',
+                '${_spot.pricePerHour.toStringAsFixed(0)} МКД',
               ),
             ],
           ),
@@ -103,7 +114,7 @@ class SpotBottomSheet extends StatelessWidget {
               borderRadius: BorderRadius.circular(12),
             ),
             child: Text(
-              'Максимално траење: ${spot.maxDurationMinutes} мин',
+              'Максимално траење: ${_spot.maxDurationMinutes} мин',
               style: const TextStyle(
                 color: AppColors.primary,
                 fontWeight: FontWeight.w500,
@@ -112,12 +123,12 @@ class SpotBottomSheet extends StatelessWidget {
             ),
           ),
           const SizedBox(height: 24),
-          if (spot.isAvailable) ...[
+          if (_spot.isAvailable) ...[
             Row(
               children: [
                 Expanded(
                   child: OutlinedButton(
-                    onPressed: () => _handleReserve(context),
+                    onPressed: _isProcessing ? null : _handleReserve,
                     style: OutlinedButton.styleFrom(
                       side: const BorderSide(
                         color: AppColors.warning,
@@ -125,14 +136,32 @@ class SpotBottomSheet extends StatelessWidget {
                       ),
                       foregroundColor: AppColors.warning,
                     ),
-                    child: const Text('Резервирај'),
+                    child: _isProcessing
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: AppColors.warning,
+                            ),
+                          )
+                        : const Text('Резервирај'),
                   ),
                 ),
                 const SizedBox(width: 12),
                 Expanded(
                   child: ElevatedButton(
-                    onPressed: () => _handleStartParking(context),
-                    child: const Text('Започни паркирање'),
+                    onPressed: _isProcessing ? null : _handleStartParking,
+                    child: _isProcessing
+                        ? const SizedBox(
+                            width: 18,
+                            height: 18,
+                            child: CircularProgressIndicator(
+                              strokeWidth: 2,
+                              color: Colors.white,
+                            ),
+                          )
+                        : const Text('Започни паркирање'),
                   ),
                 ),
               ],
@@ -142,17 +171,17 @@ class SpotBottomSheet extends StatelessWidget {
               width: double.infinity,
               padding: const EdgeInsets.symmetric(vertical: 16),
               decoration: BoxDecoration(
-                color: spot.isReserved
+                color: _spot.isReserved
                     ? AppColors.warning.withValues(alpha: 0.1)
                     : AppColors.danger.withValues(alpha: 0.1),
                 borderRadius: BorderRadius.circular(16),
               ),
               child: Text(
-                spot.isReserved ? 'Резервирано' : 'Зафатено',
+                _spot.isReserved ? 'Резервирано' : 'Зафатено',
                 style: TextStyle(
                   fontSize: 16,
                   fontWeight: FontWeight.w600,
-                  color: spot.isReserved ? AppColors.warning : AppColors.danger,
+                  color: _spot.isReserved ? AppColors.warning : AppColors.danger,
                 ),
                 textAlign: TextAlign.center,
               ),
@@ -165,10 +194,10 @@ class SpotBottomSheet extends StatelessWidget {
   Widget _buildStatusChip() {
     final Color color;
     final String label;
-    if (spot.isAvailable) {
+    if (_spot.isAvailable) {
       color = AppColors.accent;
       label = 'Слободно';
-    } else if (spot.isReserved) {
+    } else if (_spot.isReserved) {
       color = AppColors.warning;
       label = 'Резервирано';
     } else {
@@ -220,45 +249,73 @@ class SpotBottomSheet extends StatelessWidget {
     );
   }
 
-  Future<void> _handleReserve(BuildContext context) async {
+  Future<void> _handleReserve() async {
+    if (_isProcessing) return;
+    setState(() => _isProcessing = true);
+
     try {
-      await apiService.reserveSpot(spot.id);
-      if (!context.mounted) return;
+      await widget.apiService.reserveSpot(_spot.id);
+      if (!mounted) return;
 
       Navigator.of(context).pop();
 
       final shouldRefresh = await Navigator.of(context).push<bool>(
         MaterialPageRoute(
           builder: (_) => ReservationScreen(
-            spot: spot,
-            apiService: apiService,
-            authService: authService,
+            spot: _spot,
+            apiService: widget.apiService,
+            authService: widget.authService,
           ),
         ),
       );
 
       if (shouldRefresh == true) {
-        onActionComplete();
+        widget.onActionComplete();
       }
     } on ApiException catch (e) {
-      if (!context.mounted) return;
+      if (!mounted) return;
+      // Reset local processing state — we'll either close the sheet or stay
+      // on it depending on whether this was a 409 conflict.
+      setState(() => _isProcessing = false);
+
+      if (e.statusCode == 409) {
+        // Spot was just claimed by someone else. Close the (now stale) sheet,
+        // tell the user, and refresh the map.
+        Navigator.of(context).pop();
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Местото веќе не е достапно'),
+            backgroundColor: AppColors.danger,
+          ),
+        );
+        widget.onActionComplete();
+        return;
+      }
+
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
       );
     }
   }
 
-  Future<void> _handleStartParking(BuildContext context) async {
-    await startParkingFlow(
-      context: context,
-      spot: spot,
-      apiService: apiService,
-      authService: authService,
-      onComplete: () {
-        onActionComplete();
-      },
-      onSessionStarted: onActiveSessionStarted,
-    );
+  Future<void> _handleStartParking() async {
+    if (_isProcessing) return;
+    setState(() => _isProcessing = true);
+
+    try {
+      await startParkingFlow(
+        context: context,
+        spot: _spot,
+        apiService: widget.apiService,
+        authService: widget.authService,
+        onComplete: widget.onActionComplete,
+        onSessionStarted: widget.onActiveSessionStarted,
+      );
+    } finally {
+      if (mounted) {
+        setState(() => _isProcessing = false);
+      }
+    }
   }
 }
 
@@ -382,6 +439,25 @@ Future<void> startParkingFlow({
     onComplete();
   } on ApiException catch (e) {
     if (!context.mounted) return;
+
+    if (e.statusCode == 409) {
+      // Backend rejected the start because another user just claimed the
+      // spot. Do NOT create a local active session — close the source
+      // sheet/screen, surface the conflict, and refresh nearby spots so the
+      // user immediately sees the updated state.
+      if (closeBottomSheet && Navigator.of(context).canPop()) {
+        Navigator.of(context).pop();
+      }
+      ScaffoldMessenger.of(context).showSnackBar(
+        const SnackBar(
+          content: Text('Местото веќе не е достапно'),
+          backgroundColor: AppColors.danger,
+        ),
+      );
+      onComplete();
+      return;
+    }
+
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
     );
