@@ -2,11 +2,13 @@ import 'dart:async';
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
+import '../models/active_session.dart';
 import '../models/parking_spot.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../theme.dart';
 import '../widgets/spot_bottom_sheet.dart';
+import 'active_session_screen.dart';
 import 'profile_screen.dart';
 import 'welcome_screen.dart';
 
@@ -21,7 +23,9 @@ class MapScreen extends StatefulWidget {
 
 class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   GoogleMapController? _mapController;
-  late final ApiService _apiService = ApiService(authService: widget.authService);
+  late final ApiService _apiService = ApiService(
+    authService: widget.authService,
+  );
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
 
@@ -32,6 +36,21 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   bool _isLoading = true;
   bool _hasLocationPermission = false;
   bool _showSearchResults = false;
+
+  // Tracks whether the GoogleMap platform view has signalled `onMapCreated`.
+  // We defer the (potentially 100-marker) initial spot load until then, so
+  // marker placement doesn't compete with the platform view setup, location
+  // service start, and `myLocationEnabled` for the main thread.
+  bool _mapReady = false;
+  bool _initialLoadStarted = false;
+
+  ActiveSession? _activeSession;
+  Timer? _activeSessionTicker;
+  // ValueNotifier so the 1Hz timer tick only rebuilds the small timer text,
+  // not the whole MapScreen (which would rebuild the GoogleMap tree).
+  final ValueNotifier<Duration> _activeSessionElapsed = ValueNotifier(
+    Duration.zero,
+  );
 
   static const LatLng _skopjeCenter = LatLng(42.0003, 21.4177);
 
@@ -59,6 +78,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    _activeSessionTicker?.cancel();
+    _activeSessionElapsed.dispose();
     _mapController?.dispose();
     _apiService.dispose();
     _searchController.dispose();
@@ -104,10 +125,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     setState(() => _showSearchResults = false);
 
     _mapController?.animateCamera(
-      CameraUpdate.newLatLngZoom(
-        LatLng(spot.latitude, spot.longitude),
-        17,
-      ),
+      CameraUpdate.newLatLngZoom(LatLng(spot.latitude, spot.longitude), 17),
     );
 
     _loadSpots(spot.latitude, spot.longitude);
@@ -117,7 +135,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     try {
       final serviceEnabled = await Geolocator.isLocationServiceEnabled();
       if (!serviceEnabled) {
-        _loadSpotsAtDefault();
+        _attemptInitialLoad();
         return;
       }
 
@@ -125,17 +143,21 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       if (permission == LocationPermission.denied) {
         permission = await Geolocator.requestPermission();
         if (permission == LocationPermission.denied) {
-          _loadSpotsAtDefault();
+          _attemptInitialLoad();
           return;
         }
       }
 
       if (permission == LocationPermission.deniedForever) {
-        _loadSpotsAtDefault();
+        _attemptInitialLoad();
         return;
       }
 
-      _hasLocationPermission = true;
+      if (!mounted) return;
+      // Flip myLocationEnabled on the GoogleMap. Done in its own setState so
+      // it can happen independently of position resolution.
+      setState(() => _hasLocationPermission = true);
+
       final position = await Geolocator.getCurrentPosition(
         locationSettings: const LocationSettings(
           accuracy: LocationAccuracy.high,
@@ -145,17 +167,53 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       if (!mounted) return;
 
       if (_isInMacedonia(position.latitude, position.longitude)) {
-        setState(() => _currentPosition = position);
-        _mapController?.animateCamera(
-          CameraUpdate.newLatLng(
-            LatLng(position.latitude, position.longitude),
-          ),
-        );
-        _loadSpots(position.latitude, position.longitude);
-      } else {
-        _loadSpotsAtDefault();
+        _currentPosition = position;
+        if (_mapReady) {
+          _mapController?.animateCamera(
+            CameraUpdate.newLatLng(
+              LatLng(position.latitude, position.longitude),
+            ),
+          );
+        }
       }
+      _attemptInitialLoad();
     } on Exception {
+      _attemptInitialLoad();
+    }
+  }
+
+  /// Called by the GoogleMap once its platform view is ready. We capture the
+  /// controller, recenter on the user (if location resolved before the map),
+  /// and schedule the initial spots fetch for the next frame so the map
+  /// fully renders before 100 markers are pushed across the platform channel.
+  void _onMapCreated(GoogleMapController controller) {
+    _mapController = controller;
+    _mapReady = true;
+
+    final pos = _currentPosition;
+    if (pos != null) {
+      controller.animateCamera(
+        CameraUpdate.newLatLng(LatLng(pos.latitude, pos.longitude)),
+      );
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback((_) {
+      if (!mounted) return;
+      _attemptInitialLoad();
+    });
+  }
+
+  /// Loads the initial set of spots only once both prerequisites are met:
+  /// the map is ready AND the location/permission flow has resolved (either
+  /// to a real position or to "use default"). Either side calls this after
+  /// it finishes; whoever arrives second triggers the actual fetch.
+  void _attemptInitialLoad() {
+    if (!mounted || !_mapReady || _initialLoadStarted) return;
+    _initialLoadStarted = true;
+    final pos = _currentPosition;
+    if (pos != null) {
+      _loadSpots(pos.latitude, pos.longitude);
+    } else {
       _loadSpotsAtDefault();
     }
   }
@@ -169,6 +227,16 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   }
 
   Future<void> _loadSpots(double lat, double lon) async {
+    // While a session is active, the map only ever shows the parked car
+    // marker — skip the spots fetch entirely.
+    if (_activeSession != null) {
+      setState(() {
+        _isLoading = false;
+        _markers = {_buildActiveSessionMarker(_activeSession!)};
+      });
+      return;
+    }
+
     setState(() => _isLoading = true);
     try {
       final spots = await _apiService.getNearbySpots(
@@ -199,8 +267,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       final hue = spot.isAvailable
           ? BitmapDescriptor.hueGreen
           : spot.isReserved
-              ? BitmapDescriptor.hueOrange
-              : BitmapDescriptor.hueRed;
+          ? BitmapDescriptor.hueOrange
+          : BitmapDescriptor.hueRed;
 
       return Marker(
         markerId: MarkerId(spot.id),
@@ -209,6 +277,113 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         onTap: () => _showSpotDetails(spot),
       );
     }).toSet();
+  }
+
+  /// A clearly distinct marker (azure) for the parked car. Using the
+  /// default bitmap with a different hue avoids the brittleness of
+  /// loading a custom image asset, while still being instantly readable
+  /// against the regular green/orange/red spot markers.
+  Marker _buildActiveSessionMarker(ActiveSession session) {
+    return Marker(
+      markerId: const MarkerId('active_session'),
+      position: LatLng(session.spot.latitude, session.spot.longitude),
+      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+      infoWindow: InfoWindow(
+        title: 'Вашиот автомобил',
+        snippet: '${session.spot.streetName} · ${session.licensePlate}',
+      ),
+      onTap: _openActiveSession,
+    );
+  }
+
+  void _startActiveSession(ActiveSession session) {
+    _activeSessionElapsed.value = DateTime.now().difference(session.startTime);
+    setState(() {
+      _activeSession = session;
+      _markers = {_buildActiveSessionMarker(session)};
+    });
+    _startActiveSessionTicker();
+
+    _mapController?.animateCamera(
+      CameraUpdate.newLatLngZoom(
+        LatLng(session.spot.latitude, session.spot.longitude),
+        17,
+      ),
+    );
+
+    // Push the screen now so the user sees the same active session
+    // experience as before — they can minimize back to this map.
+    unawaited(_openActiveSession());
+  }
+
+  void _startActiveSessionTicker() {
+    _activeSessionTicker?.cancel();
+    _activeSessionTicker = Timer.periodic(const Duration(seconds: 1), (_) {
+      if (!mounted || _activeSession == null) return;
+      // Writing to the ValueNotifier only rebuilds the timer text via its
+      // ValueListenableBuilder; the GoogleMap, search bar, FAB, etc. are
+      // untouched. This is what keeps the main thread free.
+      _activeSessionElapsed.value = DateTime.now().difference(
+        _activeSession!.startTime,
+      );
+    });
+  }
+
+  Future<void> _openActiveSession() async {
+    final session = _activeSession;
+    if (session == null) return;
+
+    final result = await Navigator.of(context).push<ActiveSessionResult>(
+      MaterialPageRoute(
+        builder: (_) => ActiveSessionScreen(
+          spot: session.spot,
+          licensePlate: session.licensePlate,
+          sessionStartTime: session.startTime,
+          durationHours: session.durationHours,
+          paidAmount: session.paidAmount,
+          apiService: _apiService,
+          authService: widget.authService,
+          onSessionUpdated: (durationHours, paidAmount) {
+            if (!mounted || _activeSession == null) return;
+            setState(() {
+              _activeSession = _activeSession!.copyWith(
+                durationHours: durationHours,
+                paidAmount: paidAmount,
+              );
+            });
+          },
+        ),
+      ),
+    );
+
+    if (!mounted) return;
+    if (result == ActiveSessionResult.ended) {
+      _clearActiveSession();
+    }
+    // ActiveSessionResult.minimized (or null) → keep the session running.
+  }
+
+  void _clearActiveSession() {
+    _activeSessionTicker?.cancel();
+    _activeSessionTicker = null;
+    _activeSessionElapsed.value = Duration.zero;
+    setState(() {
+      _activeSession = null;
+    });
+
+    // Restore normal markers around the user's current location.
+    if (_currentPosition != null) {
+      _loadSpots(_currentPosition!.latitude, _currentPosition!.longitude);
+    } else {
+      _loadSpotsAtDefault();
+    }
+  }
+
+  String _formatElapsed(Duration d) {
+    final h = d.inHours.toString().padLeft(2, '0');
+    final m = (d.inMinutes % 60).toString().padLeft(2, '0');
+    final s = (d.inSeconds % 60).toString().padLeft(2, '0');
+    return '$h:$m:$s';
   }
 
   void _showSpotDetails(ParkingSpot spot) {
@@ -221,15 +396,16 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         apiService: _apiService,
         authService: widget.authService,
         onActionComplete: () {
+          // Don't refetch spots while a session is active — the only
+          // marker on the map should remain the parked car.
+          if (_activeSession != null) return;
           if (_currentPosition != null) {
-            _loadSpots(
-              _currentPosition!.latitude,
-              _currentPosition!.longitude,
-            );
+            _loadSpots(_currentPosition!.latitude, _currentPosition!.longitude);
           } else {
             _loadSpotsAtDefault();
           }
         },
+        onActiveSessionStarted: _startActiveSession,
       ),
     );
   }
@@ -242,10 +418,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       final lon = _currentPosition!.longitude;
 
       _mapController?.animateCamera(
-        CameraUpdate.newLatLngZoom(
-          LatLng(lat, lon),
-          16.5,
-        ),
+        CameraUpdate.newLatLngZoom(LatLng(lat, lon), 16.5),
       );
 
       _loadSpots(lat, lon);
@@ -261,10 +434,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   void _showError(String message) {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(
-        content: Text(message),
-        backgroundColor: AppColors.danger,
-      ),
+      SnackBar(content: Text(message), backgroundColor: AppColors.danger),
     );
   }
 
@@ -298,7 +468,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               target: _skopjeCenter,
               zoom: 16.5,
             ),
-            onMapCreated: (controller) => _mapController = controller,
+            onMapCreated: _onMapCreated,
             markers: _markers,
             myLocationEnabled: _hasLocationPermission,
             myLocationButtonEnabled: false,
@@ -339,24 +509,31 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               right: 0,
               bottom: 0,
               child: Center(
-                child: CircularProgressIndicator(
-                  color: AppColors.accent,
-                ),
+                child: CircularProgressIndicator(color: AppColors.accent),
               ),
             ),
 
-
-          // Recenter button
+          // Recenter button + (optional) minimized active session card
           Positioned(
             bottom: 24,
             right: 16,
-            child: ScaleTransition(
-              scale: _fabScaleAnim,
-              child: FloatingActionButton(
-                onPressed: _recenterMap,
-                backgroundColor: AppColors.accent,
-                child: const Icon(Icons.my_location, color: Colors.white),
-              ),
+            child: Column(
+              mainAxisSize: MainAxisSize.min,
+              crossAxisAlignment: CrossAxisAlignment.end,
+              children: [
+                if (_activeSession != null) ...[
+                  _buildActiveSessionCard(),
+                  const SizedBox(height: 12),
+                ],
+                ScaleTransition(
+                  scale: _fabScaleAnim,
+                  child: FloatingActionButton(
+                    onPressed: _recenterMap,
+                    backgroundColor: AppColors.accent,
+                    child: const Icon(Icons.my_location, color: Colors.white),
+                  ),
+                ),
+              ],
             ),
           ),
         ],
@@ -364,10 +541,54 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     );
   }
 
+  Widget _buildActiveSessionCard() {
+    return Material(
+      elevation: 6,
+      shadowColor: AppColors.primary.withValues(alpha: 0.2),
+      borderRadius: BorderRadius.circular(16),
+      color: Colors.white,
+      child: InkWell(
+        borderRadius: BorderRadius.circular(16),
+        onTap: _openActiveSession,
+        child: Padding(
+          padding: const EdgeInsets.symmetric(horizontal: 14, vertical: 10),
+          child: Row(
+            mainAxisSize: MainAxisSize.min,
+            children: [
+              const Icon(
+                Icons.directions_car,
+                color: AppColors.accent,
+                size: 22,
+              ),
+              const SizedBox(width: 10),
+              ValueListenableBuilder<Duration>(
+                valueListenable: _activeSessionElapsed,
+                builder: (_, elapsed, _) => Text(
+                  _formatElapsed(elapsed),
+                  style: const TextStyle(
+                    fontSize: 16,
+                    fontWeight: FontWeight.w700,
+                    color: AppColors.primary,
+                    letterSpacing: 1.5,
+                    fontFeatures: [FontFeature.tabularFigures()],
+                  ),
+                ),
+              ),
+              const SizedBox(width: 8),
+              const Icon(
+                Icons.chevron_right,
+                color: AppColors.textSecondary,
+                size: 20,
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
+
   Widget _buildProfileButton() {
-    final icon = widget.authService.isLoggedIn
-        ? Icons.person
-        : Icons.login;
+    final icon = widget.authService.isLoggedIn ? Icons.person : Icons.login;
     return Material(
       elevation: 4,
       shadowColor: AppColors.primary.withValues(alpha: 0.15),
@@ -442,15 +663,16 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           mainAxisSize: MainAxisSize.min,
           children: _searchResults.map((spot) {
             final availableOnStreet = _spots
-                .where((s) =>
-                    s.streetName == spot.streetName && s.isAvailable)
+                .where((s) => s.streetName == spot.streetName && s.isAvailable)
                 .length;
 
             return InkWell(
               onTap: () => _onSearchResultTap(spot),
               child: Padding(
-                padding:
-                    const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+                padding: const EdgeInsets.symmetric(
+                  horizontal: 16,
+                  vertical: 12,
+                ),
                 child: Row(
                   children: [
                     Icon(

@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import '../models/active_session.dart';
 import '../models/parking_spot.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
@@ -16,12 +17,19 @@ class SpotBottomSheet extends StatelessWidget {
   final AuthService? authService;
   final VoidCallback onActionComplete;
 
+  /// Optional hook used by [MapScreen] to take over the active-session
+  /// navigation so it can render the minimized timer card and a single
+  /// car marker on the map. If null, the legacy flow is used (the bottom
+  /// sheet pushes [ActiveSessionScreen] itself).
+  final void Function(ActiveSession session)? onActiveSessionStarted;
+
   const SpotBottomSheet({
     super.key,
     required this.spot,
     required this.apiService,
     required this.onActionComplete,
     this.authService,
+    this.onActiveSessionStarted,
   });
 
   @override
@@ -112,7 +120,9 @@ class SpotBottomSheet extends StatelessWidget {
                     onPressed: () => _handleReserve(context),
                     style: OutlinedButton.styleFrom(
                       side: const BorderSide(
-                          color: AppColors.warning, width: 2),
+                        color: AppColors.warning,
+                        width: 2,
+                      ),
                       foregroundColor: AppColors.warning,
                     ),
                     child: const Text('Резервирај'),
@@ -233,10 +243,7 @@ class SpotBottomSheet extends StatelessWidget {
     } on ApiException catch (e) {
       if (!context.mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(e.message),
-          backgroundColor: AppColors.danger,
-        ),
+        SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
       );
     }
   }
@@ -250,6 +257,7 @@ class SpotBottomSheet extends StatelessWidget {
       onComplete: () {
         onActionComplete();
       },
+      onSessionStarted: onActiveSessionStarted,
     );
   }
 }
@@ -269,6 +277,7 @@ Future<void> startParkingFlow({
   required VoidCallback onComplete,
   bool closeBottomSheet = true,
   bool replacePrevious = false,
+  void Function(ActiveSession session)? onSessionStarted,
 }) async {
   final licensePlate = await showDialog<String>(
     context: context,
@@ -334,25 +343,43 @@ Future<void> startParkingFlow({
       Navigator.of(context).pop(); // close source (bottom sheet / reservation)
     }
 
-    final route = MaterialPageRoute<bool>(
+    final activeSession = ActiveSession(
+      spot: spot,
+      licensePlate: licensePlate,
+      startTime: session.startTime,
+      durationHours: session.durationHours ?? durationHours,
+      paidAmount: session.paidAmount ?? totalCost,
+    );
+
+    if (onSessionStarted != null) {
+      // Parent (MapScreen) takes over: it stores the session, opens the
+      // active session screen and handles the minimize / end results.
+      onSessionStarted(activeSession);
+      onComplete();
+      return;
+    }
+
+    final route = MaterialPageRoute<ActiveSessionResult>(
       builder: (_) => ActiveSessionScreen(
         spot: spot,
         licensePlate: licensePlate,
-        sessionStartTime: session.startTime,
-        durationHours: session.durationHours ?? durationHours,
-        paidAmount: session.paidAmount ?? totalCost,
+        sessionStartTime: activeSession.startTime,
+        durationHours: activeSession.durationHours,
+        paidAmount: activeSession.paidAmount,
         apiService: apiService,
         authService: authService,
       ),
     );
 
-    final shouldRefresh = replacePrevious
-        ? await Navigator.of(context).pushReplacement<bool, bool>(route)
-        : await Navigator.of(context).push<bool>(route);
+    if (replacePrevious) {
+      await Navigator.of(
+        context,
+      ).pushReplacement<ActiveSessionResult, ActiveSessionResult>(route);
+    } else {
+      await Navigator.of(context).push<ActiveSessionResult>(route);
+    }
 
     onComplete();
-    // shouldRefresh is currently informational — listeners always refresh.
-    if (shouldRefresh == false) return;
   } on ApiException catch (e) {
     if (!context.mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(

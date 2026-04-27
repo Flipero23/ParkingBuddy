@@ -1,5 +1,6 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../models/active_session.dart';
 import '../models/parking_spot.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
@@ -16,6 +17,10 @@ class ActiveSessionScreen extends StatefulWidget {
   final ApiService apiService;
   final AuthService? authService;
 
+  /// Called when the user extends the session so a parent that holds the
+  /// active session state (e.g. [MapScreen]) can keep its snapshot in sync.
+  final void Function(int durationHours, double paidAmount)? onSessionUpdated;
+
   const ActiveSessionScreen({
     super.key,
     required this.spot,
@@ -25,6 +30,7 @@ class ActiveSessionScreen extends StatefulWidget {
     required this.paidAmount,
     required this.apiService,
     this.authService,
+    this.onSessionUpdated,
   });
 
   @override
@@ -34,7 +40,9 @@ class ActiveSessionScreen extends StatefulWidget {
 class _ActiveSessionScreenState extends State<ActiveSessionScreen>
     with SingleTickerProviderStateMixin {
   late Timer _timer;
-  Duration _elapsed = Duration.zero;
+  // ValueNotifier so the 1Hz tick only rebuilds the two timer Text widgets,
+  // not the entire screen tree (Cards, info rows, action buttons, etc.).
+  final ValueNotifier<Duration> _elapsed = ValueNotifier(Duration.zero);
   late AnimationController _fadeController;
   late int _durationHours;
   late double _paidAmount;
@@ -57,9 +65,10 @@ class _ActiveSessionScreenState extends State<ActiveSessionScreen>
 
     _timer = Timer.periodic(const Duration(seconds: 1), (_) {
       if (!mounted) return;
-      final now = DateTime.now();
-      final elapsed = now.difference(widget.sessionStartTime);
-      setState(() => _elapsed = elapsed);
+      final elapsed = DateTime.now().difference(widget.sessionStartTime);
+      // Notifier-only update; ValueListenableBuilder rebuilds just the two
+      // timer Text widgets, not the entire screen.
+      _elapsed.value = elapsed;
 
       if (elapsed.inSeconds >= _durationHours * 3600) {
         _timer.cancel();
@@ -73,35 +82,30 @@ class _ActiveSessionScreenState extends State<ActiveSessionScreen>
       Duration(hours: _durationHours),
     );
     final warningTime = endTime.subtract(const Duration(minutes: 15));
-    unawaited(
-      NotificationService.instance.scheduleExpiryWarning(warningTime),
-    );
+    unawaited(NotificationService.instance.scheduleExpiryWarning(warningTime));
   }
 
   @override
   void dispose() {
     _timer.cancel();
+    _elapsed.dispose();
     _fadeController.dispose();
     super.dispose();
   }
 
-  String get _formattedElapsed {
-    final hours = _elapsed.inHours.toString().padLeft(2, '0');
-    final minutes = (_elapsed.inMinutes % 60).toString().padLeft(2, '0');
-    final seconds = (_elapsed.inSeconds % 60).toString().padLeft(2, '0');
+  String _formatElapsed(Duration d) {
+    final hours = d.inHours.toString().padLeft(2, '0');
+    final minutes = (d.inMinutes % 60).toString().padLeft(2, '0');
+    final seconds = (d.inSeconds % 60).toString().padLeft(2, '0');
     return '$hours:$minutes:$seconds';
   }
 
-  Duration get _remaining {
-    final total = Duration(hours: _durationHours);
-    final left = total - _elapsed;
-    return left.isNegative ? Duration.zero : left;
-  }
-
-  String get _formattedRemaining {
-    final h = _remaining.inHours.toString().padLeft(2, '0');
-    final m = (_remaining.inMinutes % 60).toString().padLeft(2, '0');
-    final s = (_remaining.inSeconds % 60).toString().padLeft(2, '0');
+  String _formatRemaining(Duration elapsed) {
+    final left = Duration(hours: _durationHours) - elapsed;
+    final remaining = left.isNegative ? Duration.zero : left;
+    final h = remaining.inHours.toString().padLeft(2, '0');
+    final m = (remaining.inMinutes % 60).toString().padLeft(2, '0');
+    final s = (remaining.inSeconds % 60).toString().padLeft(2, '0');
     return '$h:$m:$s';
   }
 
@@ -112,13 +116,17 @@ class _ActiveSessionScreenState extends State<ActiveSessionScreen>
       await widget.apiService.endParking(widget.spot.id);
       unawaited(NotificationService.instance.cancelExpiryWarning());
       if (!mounted) return;
-      Navigator.of(context).pop(true);
+      Navigator.of(context).pop(ActiveSessionResult.ended);
     } on ApiException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
         SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
       );
     }
+  }
+
+  void _minimize() {
+    Navigator.of(context).pop(ActiveSessionResult.minimized);
   }
 
   Future<void> _extendParking() async {
@@ -147,6 +155,7 @@ class _ActiveSessionScreenState extends State<ActiveSessionScreen>
         _durationHours = updated.durationHours ?? _durationHours + 1;
         _paidAmount = updated.paidAmount ?? _paidAmount + extraCost;
       });
+      widget.onSessionUpdated?.call(_durationHours, _paidAmount);
       _scheduleExpiryWarning();
       if (widget.authService?.isLoggedIn == true) {
         try {
@@ -174,151 +183,171 @@ class _ActiveSessionScreenState extends State<ActiveSessionScreen>
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      backgroundColor: AppColors.background,
-      appBar: AppBar(
-        backgroundColor: Colors.transparent,
-        elevation: 0,
-        title: const Text(
-          'Активно паркирање',
-          style: TextStyle(color: AppColors.textPrimary),
+    return PopScope(
+      canPop: false,
+      onPopInvokedWithResult: (didPop, result) {
+        if (didPop) return;
+        // Treat system back as "minimize" so the session keeps running.
+        Navigator.of(context).pop(ActiveSessionResult.minimized);
+      },
+      child: Scaffold(
+        backgroundColor: AppColors.background,
+        appBar: AppBar(
+          backgroundColor: Colors.transparent,
+          elevation: 0,
+          title: const Text(
+            'Активно паркирање',
+            style: TextStyle(color: AppColors.textPrimary),
+          ),
+          centerTitle: true,
+          automaticallyImplyLeading: false,
+          leading: IconButton(
+            icon: const Icon(Icons.expand_more, color: AppColors.textPrimary),
+            tooltip: 'Минимизирај',
+            onPressed: _minimize,
+          ),
         ),
-        centerTitle: true,
-        automaticallyImplyLeading: false,
-      ),
-      body: FadeTransition(
-        opacity: CurvedAnimation(
-          parent: _fadeController,
-          curve: Curves.easeIn,
-        ),
-        child: Padding(
-          padding: const EdgeInsets.all(24),
-          child: Column(
-            children: [
-              const Spacer(),
+        body: FadeTransition(
+          opacity: CurvedAnimation(
+            parent: _fadeController,
+            curve: Curves.easeIn,
+          ),
+          child: Padding(
+            padding: const EdgeInsets.all(24),
+            child: Column(
+              children: [
+                const Spacer(),
 
-              // Timer
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(32),
-                  child: Column(
-                    children: [
-                      const Icon(
-                        Icons.timer,
-                        color: AppColors.accent,
-                        size: 40,
-                      ),
-                      const SizedBox(height: 12),
-                      Text(
-                        _formattedElapsed,
-                        style: const TextStyle(
-                          fontSize: 48,
-                          fontWeight: FontWeight.w700,
+                // Timer
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(32),
+                    child: Column(
+                      children: [
+                        const Icon(
+                          Icons.timer,
                           color: AppColors.accent,
-                          letterSpacing: 3,
+                          size: 40,
                         ),
-                      ),
-                      const SizedBox(height: 8),
-                      Text(
-                        'Преостанато: $_formattedRemaining',
-                        style: const TextStyle(
-                          fontSize: 14,
-                          color: AppColors.textSecondary,
-                        ),
-                      ),
-                      const SizedBox(height: 16),
-                      Container(
-                        padding: const EdgeInsets.symmetric(
-                          horizontal: 20,
-                          vertical: 10,
-                        ),
-                        decoration: BoxDecoration(
-                          color: AppColors.secondary,
-                          borderRadius: BorderRadius.circular(20),
-                        ),
-                        child: Text(
-                          'Платено однапред: ${_paidAmount.toStringAsFixed(0)} МКД · $_durationHours ч',
-                          style: const TextStyle(
-                            color: AppColors.primary,
-                            fontWeight: FontWeight.w600,
-                            fontSize: 14,
+                        const SizedBox(height: 12),
+                        ValueListenableBuilder<Duration>(
+                          valueListenable: _elapsed,
+                          builder: (_, elapsed, _) => Column(
+                            children: [
+                              Text(
+                                _formatElapsed(elapsed),
+                                style: const TextStyle(
+                                  fontSize: 48,
+                                  fontWeight: FontWeight.w700,
+                                  color: AppColors.accent,
+                                  letterSpacing: 3,
+                                ),
+                              ),
+                              const SizedBox(height: 8),
+                              Text(
+                                'Преостанато: ${_formatRemaining(elapsed)}',
+                                style: const TextStyle(
+                                  fontSize: 14,
+                                  color: AppColors.textSecondary,
+                                ),
+                              ),
+                            ],
                           ),
                         ),
-                      ),
-                    ],
+                        const SizedBox(height: 16),
+                        Container(
+                          padding: const EdgeInsets.symmetric(
+                            horizontal: 20,
+                            vertical: 10,
+                          ),
+                          decoration: BoxDecoration(
+                            color: AppColors.secondary,
+                            borderRadius: BorderRadius.circular(20),
+                          ),
+                          child: Text(
+                            'Платено однапред: ${_paidAmount.toStringAsFixed(0)} МКД · $_durationHours ч',
+                            style: const TextStyle(
+                              color: AppColors.primary,
+                              fontWeight: FontWeight.w600,
+                              fontSize: 14,
+                            ),
+                          ),
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
 
-              const SizedBox(height: 24),
+                const SizedBox(height: 24),
 
-              // Session info
-              Card(
-                child: Padding(
-                  padding: const EdgeInsets.all(20),
-                  child: Column(
-                    children: [
-                      _infoRow('Код', widget.spot.code),
-                      const Divider(height: 20),
-                      _infoRow('Улица', widget.spot.streetName),
-                      const Divider(height: 20),
-                      _infoRow('Зона', widget.spot.zone),
-                      const Divider(height: 20),
-                      _infoRow('Регистарска таблица', widget.licensePlate),
-                      const Divider(height: 20),
-                      _infoRow(
-                        'Цена по час',
-                        '${widget.spot.pricePerHour.toStringAsFixed(0)} МКД',
-                      ),
-                    ],
+                // Session info
+                Card(
+                  child: Padding(
+                    padding: const EdgeInsets.all(20),
+                    child: Column(
+                      children: [
+                        _infoRow('Код', widget.spot.code),
+                        const Divider(height: 20),
+                        _infoRow('Улица', widget.spot.streetName),
+                        const Divider(height: 20),
+                        _infoRow('Зона', widget.spot.zone),
+                        const Divider(height: 20),
+                        _infoRow('Регистарска таблица', widget.licensePlate),
+                        const Divider(height: 20),
+                        _infoRow(
+                          'Цена по час',
+                          '${widget.spot.pricePerHour.toStringAsFixed(0)} МКД',
+                        ),
+                      ],
+                    ),
                   ),
                 ),
-              ),
 
-              const Spacer(),
+                const Spacer(),
 
-              if (_canExtend) ...[
+                if (_canExtend) ...[
+                  SizedBox(
+                    width: double.infinity,
+                    child: OutlinedButton.icon(
+                      onPressed: _extending ? null : _extendParking,
+                      style: OutlinedButton.styleFrom(
+                        padding: const EdgeInsets.symmetric(vertical: 16),
+                        side: const BorderSide(
+                          color: AppColors.accent,
+                          width: 2,
+                        ),
+                        foregroundColor: AppColors.accent,
+                      ),
+                      icon: const Icon(Icons.add_alarm),
+                      label: Text(
+                        _extending
+                            ? 'Продолжување...'
+                            : 'Продолжи за 1 час (+${widget.spot.pricePerHour.toStringAsFixed(0)} МКД)',
+                        style: const TextStyle(fontSize: 16),
+                      ),
+                    ),
+                  ),
+                  const SizedBox(height: 12),
+                ],
+
+                // End parking button
                 SizedBox(
                   width: double.infinity,
-                  child: OutlinedButton.icon(
-                    onPressed: _extending ? null : _extendParking,
-                    style: OutlinedButton.styleFrom(
-                      padding: const EdgeInsets.symmetric(vertical: 16),
-                      side: const BorderSide(
-                        color: AppColors.accent,
-                        width: 2,
-                      ),
-                      foregroundColor: AppColors.accent,
+                  child: ElevatedButton(
+                    onPressed: _endParking,
+                    style: ElevatedButton.styleFrom(
+                      backgroundColor: AppColors.danger,
+                      padding: const EdgeInsets.symmetric(vertical: 18),
                     ),
-                    icon: const Icon(Icons.add_alarm),
-                    label: Text(
-                      _extending
-                          ? 'Продолжување...'
-                          : 'Продолжи за 1 час (+${widget.spot.pricePerHour.toStringAsFixed(0)} МКД)',
-                      style: const TextStyle(fontSize: 16),
+                    child: const Text(
+                      'Заврши паркирање',
+                      style: TextStyle(fontSize: 18),
                     ),
                   ),
                 ),
-                const SizedBox(height: 12),
+                const SizedBox(height: 16),
               ],
-
-              // End parking button
-              SizedBox(
-                width: double.infinity,
-                child: ElevatedButton(
-                  onPressed: _endParking,
-                  style: ElevatedButton.styleFrom(
-                    backgroundColor: AppColors.danger,
-                    padding: const EdgeInsets.symmetric(vertical: 18),
-                  ),
-                  child: const Text(
-                    'Заврши паркирање',
-                    style: TextStyle(fontSize: 18),
-                  ),
-                ),
-              ),
-              const SizedBox(height: 16),
-            ],
+            ),
           ),
         ),
       ),
