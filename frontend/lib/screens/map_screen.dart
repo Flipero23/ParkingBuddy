@@ -4,9 +4,11 @@ import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
 import '../models/active_session.dart';
 import '../models/parking_spot.dart';
+import '../models/place_suggestion.dart';
 import '../services/active_session_storage.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
+import '../services/places_service.dart';
 import '../theme.dart';
 import '../widgets/spot_bottom_sheet.dart';
 import 'active_session_screen.dart';
@@ -27,6 +29,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   late final ApiService _apiService = ApiService(
     authService: widget.authService,
   );
+  final PlacesService _placesService = PlacesService();
   final TextEditingController _searchController = TextEditingController();
   final FocusNode _searchFocus = FocusNode();
 
@@ -34,9 +37,15 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   Set<Marker> _markers = {};
   List<ParkingSpot> _spots = [];
   List<ParkingSpot> _searchResults = [];
+  List<PlaceSuggestion> _placeSuggestions = [];
   bool _isLoading = true;
   bool _hasLocationPermission = false;
   bool _showSearchResults = false;
+  bool _isSearchingPlaces = false;
+  Timer? _searchDebounce;
+  // Tracks the latest in-flight remote search so we can drop stale results
+  // without racing — the highest seq always wins.
+  int _searchSeq = 0;
 
   // Tracks whether the GoogleMap platform view has signalled `onMapCreated`.
   // We defer the (potentially 100-marker) initial spot load until then, so
@@ -102,7 +111,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       _mapController?.animateCamera(
         CameraUpdate.newLatLngZoom(
           LatLng(session.spot.latitude, session.spot.longitude),
-          17,
+          18,
         ),
       );
     }
@@ -110,10 +119,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   @override
   void dispose() {
+    _searchDebounce?.cancel();
     _activeSessionTicker?.cancel();
     _activeSessionElapsed.dispose();
     _mapController?.dispose();
     _apiService.dispose();
+    _placesService.dispose();
     _searchController.dispose();
     _searchFocus.dispose();
     _fabAnimController.dispose();
@@ -121,12 +132,35 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   }
 
   void _onSearchChanged() {
-    final query = _searchController.text.trim().toLowerCase();
-    if (query.isEmpty) {
+    final raw = _searchController.text.trim();
+    // Local DB matches stay synchronous and free — keep them snappy.
+    _updateLocalResults(raw);
+
+    _searchDebounce?.cancel();
+
+    if (raw.isEmpty) {
       setState(() {
-        _searchResults = [];
+        _placeSuggestions = const [];
+        _isSearchingPlaces = false;
         _showSearchResults = false;
       });
+      return;
+    }
+
+    setState(() {
+      _showSearchResults = true;
+      _isSearchingPlaces = true;
+    });
+
+    _searchDebounce = Timer(const Duration(milliseconds: 350), () {
+      unawaited(_runRemoteSearch(raw));
+    });
+  }
+
+  void _updateLocalResults(String raw) {
+    final query = raw.toLowerCase();
+    if (query.isEmpty) {
+      _searchResults = const [];
       return;
     }
 
@@ -134,9 +168,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       return spot.streetName.toLowerCase().contains(query) ||
           spot.code.toLowerCase().contains(query) ||
           spot.zone.toLowerCase().contains(query);
-    }).toList();
+    });
 
-    // Deduplicate by street name, keep closest
     final seen = <String>{};
     final unique = <ParkingSpot>[];
     for (final spot in filtered) {
@@ -144,23 +177,71 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         unique.add(spot);
       }
     }
+    _searchResults = unique.take(5).toList(growable: false);
+  }
+
+  Future<void> _runRemoteSearch(String query) async {
+    final seq = ++_searchSeq;
+    // Bias toward the user's current position when available so results
+    // near them rank first; the service falls back to the Skopje center.
+    final suggestions = await _placesService.search(
+      query,
+      biasLat: _currentPosition?.latitude,
+      biasLng: _currentPosition?.longitude,
+    );
+    if (!mounted || seq != _searchSeq) return;
+    // Discard if the user has cleared or moved on to a different query.
+    if (_searchController.text.trim() != query) return;
 
     setState(() {
-      _searchResults = unique.take(8).toList();
-      _showSearchResults = true;
+      _placeSuggestions = suggestions;
+      _isSearchingPlaces = false;
     });
   }
 
-  void _onSearchResultTap(ParkingSpot spot) {
-    _searchController.clear();
-    _searchFocus.unfocus();
-    setState(() => _showSearchResults = false);
-
+  void _onLocalResultTap(ParkingSpot spot) {
+    _dismissSearch();
     _mapController?.animateCamera(
       CameraUpdate.newLatLngZoom(LatLng(spot.latitude, spot.longitude), 17),
     );
+    unawaited(_loadSpots(spot.latitude, spot.longitude));
+  }
 
-    _loadSpots(spot.latitude, spot.longitude);
+  Future<void> _onPlaceSuggestionTap(PlaceSuggestion suggestion) async {
+    _dismissSearch();
+
+    // Autocomplete predictions don't carry coordinates — resolve them
+    // via Place Details before we move the camera.
+    final resolved =
+        (suggestion.latitude != null && suggestion.longitude != null)
+            ? suggestion
+            : await _placesService.getDetails(suggestion);
+    if (!mounted) return;
+
+    final lat = resolved?.latitude;
+    final lng = resolved?.longitude;
+    if (lat == null || lng == null) {
+      _showError('Не може да се вчита локацијата');
+      return;
+    }
+
+    await _mapController?.animateCamera(
+      CameraUpdate.newLatLngZoom(LatLng(lat, lng), 18),
+    );
+    if (!mounted) return;
+    unawaited(_loadSpots(lat, lng, announceEmpty: true));
+  }
+
+  void _dismissSearch() {
+    _searchDebounce?.cancel();
+    _searchController.clear();
+    _searchFocus.unfocus();
+    setState(() {
+      _showSearchResults = false;
+      _searchResults = const [];
+      _placeSuggestions = const [];
+      _isSearchingPlaces = false;
+    });
   }
 
   Future<void> _initLocation() async {
@@ -268,7 +349,11 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     _loadSpots(_skopjeCenter.latitude, _skopjeCenter.longitude);
   }
 
-  Future<void> _loadSpots(double lat, double lon) async {
+  Future<void> _loadSpots(
+    double lat,
+    double lon, {
+    bool announceEmpty = false,
+  }) async {
     // While a session is active, the map only ever shows the parked car
     // marker — skip the spots fetch entirely.
     if (_activeSession != null) {
@@ -284,7 +369,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       final spots = await _apiService.getNearbySpots(
         lat: lat,
         lon: lon,
-        radius: 5000,
+        radius: 200,
         limit: 100,
       );
       if (!mounted) return;
@@ -303,6 +388,11 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         _markers = _buildMarkers(spots);
         _isLoading = false;
       });
+
+      if (announceEmpty &&
+          spots.where((s) => s.isAvailable).isEmpty) {
+        _showInfo('Нема достапни паркинг места во близина');
+      }
     } on ApiException catch (e) {
       if (!mounted) return;
       setState(() => _isLoading = false);
@@ -474,13 +564,13 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       final lon = _currentPosition!.longitude;
 
       _mapController?.animateCamera(
-        CameraUpdate.newLatLngZoom(LatLng(lat, lon), 16.5),
+        CameraUpdate.newLatLngZoom(LatLng(lat, lon), 18),
       );
 
       _loadSpots(lat, lon);
     } else {
       _mapController?.animateCamera(
-        CameraUpdate.newLatLngZoom(_skopjeCenter, 16.5),
+        CameraUpdate.newLatLngZoom(_skopjeCenter, 18),
       );
 
       _loadSpotsAtDefault();
@@ -491,6 +581,17 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     if (!mounted) return;
     ScaffoldMessenger.of(context).showSnackBar(
       SnackBar(content: Text(message), backgroundColor: AppColors.danger),
+    );
+  }
+
+  void _showInfo(String message) {
+    if (!mounted) return;
+    ScaffoldMessenger.of(context).showSnackBar(
+      SnackBar(
+        content: Text(message),
+        backgroundColor: AppColors.primary,
+        duration: const Duration(seconds: 3),
+      ),
     );
   }
 
@@ -522,7 +623,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           GoogleMap(
             initialCameraPosition: CameraPosition(
               target: _skopjeCenter,
-              zoom: 16.5,
+              zoom: 18,
             ),
             onMapCreated: _onMapCreated,
             markers: _markers,
@@ -551,8 +652,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
                     _buildProfileButton(),
                   ],
                 ),
-                if (_showSearchResults && _searchResults.isNotEmpty)
-                  _buildSearchResults(),
+                if (_showSearchResults) _buildSearchResults(),
               ],
             ),
           ),
@@ -671,17 +771,15 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       child: TextField(
         controller: _searchController,
         focusNode: _searchFocus,
+        textInputAction: TextInputAction.search,
         decoration: InputDecoration(
-          hintText: 'Пребарај дестинација во Дебар Маало',
+          hintText: 'Пребарај локација или адреса',
           hintStyle: const TextStyle(color: AppColors.textSecondary),
           prefixIcon: const Icon(Icons.search, color: AppColors.accent),
           suffixIcon: _searchController.text.isNotEmpty
               ? IconButton(
                   icon: const Icon(Icons.close, color: AppColors.textSecondary),
-                  onPressed: () {
-                    _searchController.clear();
-                    _searchFocus.unfocus();
-                  },
+                  onPressed: _dismissSearch,
                 )
               : null,
           filled: true,
@@ -700,6 +798,17 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   }
 
   Widget _buildSearchResults() {
+    final hasLocal = _searchResults.isNotEmpty;
+    final hasPlaces = _placeSuggestions.isNotEmpty;
+    final showLoading = _isSearchingPlaces && !hasPlaces;
+    final showEmpty =
+        !_isSearchingPlaces && !hasLocal && !hasPlaces &&
+            _searchController.text.trim().isNotEmpty;
+
+    if (!hasLocal && !hasPlaces && !showLoading && !showEmpty) {
+      return const SizedBox.shrink();
+    }
+
     return Container(
       margin: const EdgeInsets.only(top: 4),
       decoration: BoxDecoration(
@@ -717,61 +826,172 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
         borderRadius: BorderRadius.circular(12),
         child: Column(
           mainAxisSize: MainAxisSize.min,
-          children: _searchResults.map((spot) {
-            final availableOnStreet = _spots
-                .where((s) => s.streetName == spot.streetName && s.isAvailable)
-                .length;
+          children: [
+            if (hasLocal) ...[
+              _buildSectionHeader('Паркинг места'),
+              ..._searchResults.map(_buildLocalRow),
+            ],
+            if (hasLocal && (hasPlaces || showLoading))
+              const Divider(height: 1, color: Color(0x11000000)),
+            if (hasPlaces) ...[
+              _buildSectionHeader('Локации'),
+              ..._placeSuggestions.map(_buildPlaceRow),
+            ],
+            if (showLoading) _buildLoadingRow(),
+            if (showEmpty) _buildEmptyRow(),
+          ],
+        ),
+      ),
+    );
+  }
 
-            return InkWell(
-              onTap: () => _onSearchResultTap(spot),
-              child: Padding(
-                padding: const EdgeInsets.symmetric(
-                  horizontal: 16,
-                  vertical: 12,
-                ),
-                child: Row(
-                  children: [
-                    Icon(
-                      Icons.location_on,
-                      color: availableOnStreet > 0
-                          ? AppColors.accent
-                          : AppColors.textSecondary,
-                      size: 20,
+  Widget _buildSectionHeader(String text) {
+    return Padding(
+      padding: const EdgeInsets.fromLTRB(16, 10, 16, 4),
+      child: Align(
+        alignment: Alignment.centerLeft,
+        child: Text(
+          text,
+          style: const TextStyle(
+            fontSize: 11,
+            fontWeight: FontWeight.w700,
+            letterSpacing: 0.6,
+            color: AppColors.textSecondary,
+          ),
+        ),
+      ),
+    );
+  }
+
+  Widget _buildLocalRow(ParkingSpot spot) {
+    final availableOnStreet = _spots
+        .where((s) => s.streetName == spot.streetName && s.isAvailable)
+        .length;
+
+    return InkWell(
+      onTap: () => _onLocalResultTap(spot),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            Icon(
+              Icons.local_parking,
+              color: availableOnStreet > 0
+                  ? AppColors.accent
+                  : AppColors.textSecondary,
+              size: 20,
+            ),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    spot.streetName,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                      color: AppColors.textPrimary,
                     ),
-                    const SizedBox(width: 12),
-                    Expanded(
-                      child: Column(
-                        crossAxisAlignment: CrossAxisAlignment.start,
-                        children: [
-                          Text(
-                            spot.streetName,
-                            style: const TextStyle(
-                              fontWeight: FontWeight.w600,
-                              fontSize: 14,
-                              color: AppColors.textPrimary,
-                            ),
-                          ),
-                          Text(
-                            'Зона ${spot.zone} · $availableOnStreet слободни',
-                            style: const TextStyle(
-                              fontSize: 12,
-                              color: AppColors.textSecondary,
-                            ),
-                          ),
-                        ],
+                  ),
+                  Text(
+                    'Зона ${spot.zone} · $availableOnStreet слободни',
+                    style: const TextStyle(
+                      fontSize: 12,
+                      color: AppColors.textSecondary,
+                    ),
+                  ),
+                ],
+              ),
+            ),
+            const Icon(
+              Icons.chevron_right,
+              color: AppColors.textSecondary,
+              size: 20,
+            ),
+          ],
+        ),
+      ),
+    );
+  }
+
+  Widget _buildPlaceRow(PlaceSuggestion suggestion) {
+    return InkWell(
+      onTap: () => unawaited(_onPlaceSuggestionTap(suggestion)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 16, vertical: 12),
+        child: Row(
+          children: [
+            const Icon(Icons.place_outlined,
+                color: AppColors.accent, size: 20),
+            const SizedBox(width: 12),
+            Expanded(
+              child: Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Text(
+                    suggestion.label,
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
+                    style: const TextStyle(
+                      fontWeight: FontWeight.w600,
+                      fontSize: 14,
+                      color: AppColors.textPrimary,
+                    ),
+                  ),
+                  if (suggestion.secondary != null)
+                    Text(
+                      suggestion.secondary!,
+                      maxLines: 1,
+                      overflow: TextOverflow.ellipsis,
+                      style: const TextStyle(
+                        fontSize: 12,
+                        color: AppColors.textSecondary,
                       ),
                     ),
-                    const Icon(
-                      Icons.chevron_right,
-                      color: AppColors.textSecondary,
-                      size: 20,
-                    ),
-                  ],
-                ),
+                ],
               ),
-            );
-          }).toList(),
+            ),
+            const Icon(
+              Icons.chevron_right,
+              color: AppColors.textSecondary,
+              size: 20,
+            ),
+          ],
         ),
+      ),
+    );
+  }
+
+  Widget _buildLoadingRow() {
+    return const Padding(
+      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Row(
+        children: [
+          SizedBox(
+            width: 16,
+            height: 16,
+            child: CircularProgressIndicator(
+              strokeWidth: 2,
+              color: AppColors.accent,
+            ),
+          ),
+          SizedBox(width: 12),
+          Text(
+            'Барам локации…',
+            style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
+          ),
+        ],
+      ),
+    );
+  }
+
+  Widget _buildEmptyRow() {
+    return const Padding(
+      padding: EdgeInsets.symmetric(horizontal: 16, vertical: 14),
+      child: Text(
+        'Нема резултати за пребарувањето',
+        style: TextStyle(fontSize: 13, color: AppColors.textSecondary),
       ),
     );
   }
