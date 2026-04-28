@@ -1,4 +1,6 @@
 import 'dart:async';
+import 'dart:math' as math;
+import 'dart:ui' as ui;
 import 'package:flutter/material.dart';
 import 'package:google_maps_flutter/google_maps_flutter.dart';
 import 'package:geolocator/geolocator.dart';
@@ -75,6 +77,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   ActiveSession? _activeSession;
   Timer? _activeSessionTicker;
+  // Cached custom marker for the active session. Regenerated only when the
+  // street name or license plate changes — duration/payment edits don't
+  // affect the label.
+  BitmapDescriptor? _activeSessionMarkerIcon;
+  Offset _activeSessionMarkerAnchor = const Offset(0.5, 1.0);
+  String? _activeSessionMarkerCacheKey;
   // ValueNotifier so the 1Hz timer tick only rebuilds the small timer text,
   // not the whole MapScreen (which would rebuild the GoogleMap tree).
   final ValueNotifier<Duration> _activeSessionElapsed = ValueNotifier(
@@ -125,6 +133,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       _markers = _composeMarkers();
     });
     _startActiveSessionTicker();
+    unawaited(_ensureActiveSessionMarkerIcon(session));
 
     if (_mapReady) {
       _mapController?.animateCamera(
@@ -222,7 +231,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   void _onLocalResultTap(ParkingSpot spot) {
     _dismissSearch();
     _mapController?.animateCamera(
-      CameraUpdate.newLatLngZoom(LatLng(spot.latitude, spot.longitude), 17),
+      CameraUpdate.newLatLngZoom(LatLng(spot.latitude, spot.longitude), 18),
     );
     unawaited(_loadSpots(spot.latitude, spot.longitude));
   }
@@ -338,7 +347,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       controller.animateCamera(
         CameraUpdate.newLatLngZoom(
           LatLng(session.spot.latitude, session.spot.longitude),
-          17,
+          18,
         ),
       );
     } else {
@@ -542,21 +551,62 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     );
   }
 
-  /// A clearly distinct marker (azure) for the parked car. Using the
-  /// default bitmap with a different hue avoids the brittleness of
-  /// loading a custom image asset, while still being instantly readable
-  /// against the regular green/orange/red spot markers.
+  /// Custom marker for the parked car: a label bubble ("Вашиот автомобил" +
+  /// street · plate) sitting above a circular pin. Uses the cached bitmap
+  /// when ready, falling back to the azure default during the brief window
+  /// before the canvas image is generated.
   Marker _buildActiveSessionMarker(ActiveSession session) {
+    final cached = _activeSessionMarkerIcon;
     return Marker(
       markerId: const MarkerId('active_session'),
       position: LatLng(session.spot.latitude, session.spot.longitude),
-      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
-      infoWindow: InfoWindow(
-        title: 'Вашиот автомобил',
-        snippet: '${session.spot.streetName} · ${session.licensePlate}',
-      ),
+      icon: cached ??
+          BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueAzure),
+      anchor: cached != null
+          ? _activeSessionMarkerAnchor
+          : const Offset(0.5, 1.0),
       onTap: _openActiveSession,
+      zIndexInt: 3,
     );
+  }
+
+  String _activeSessionMarkerKey(ActiveSession s) =>
+      '${s.spot.streetName}|${s.licensePlate}';
+
+  /// Builds (or rebuilds) the active session marker bitmap on demand.
+  /// Cheap no-op when the cache already matches the current session — only
+  /// regenerates when streetName or licensePlate changes. The caller drives
+  /// this from session lifecycle hooks (restore/start) so the marker swaps
+  /// in once Canvas rendering finishes.
+  Future<void> _ensureActiveSessionMarkerIcon(ActiveSession session) async {
+    final key = _activeSessionMarkerKey(session);
+    if (_activeSessionMarkerCacheKey == key &&
+        _activeSessionMarkerIcon != null) {
+      return;
+    }
+
+    final dpr = MediaQuery.maybeOf(context)?.devicePixelRatio ??
+        WidgetsBinding.instance.platformDispatcher.views.first.devicePixelRatio;
+
+    final asset = await _renderActiveSessionMarkerAsset(
+      title: 'Вашиот автомобил',
+      subtitle: '${session.spot.streetName} · ${session.licensePlate}',
+      devicePixelRatio: dpr,
+    );
+
+    if (!mounted) return;
+    final current = _activeSession;
+    if (current == null || _activeSessionMarkerKey(current) != key) {
+      // Session changed (or ended) while we were rasterising — drop result.
+      return;
+    }
+
+    setState(() {
+      _activeSessionMarkerIcon = asset.descriptor;
+      _activeSessionMarkerAnchor = asset.anchor;
+      _activeSessionMarkerCacheKey = key;
+      _markers = _composeMarkers();
+    });
   }
 
   void _startActiveSession(ActiveSession session) {
@@ -571,11 +621,12 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     });
     unawaited(ActiveSessionStorage.save(session));
     _startActiveSessionTicker();
+    unawaited(_ensureActiveSessionMarkerIcon(session));
 
     _mapController?.animateCamera(
       CameraUpdate.newLatLngZoom(
         LatLng(session.spot.latitude, session.spot.longitude),
-        17,
+        18,
       ),
     );
 
@@ -639,6 +690,9 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     _activeSessionElapsed.value = Duration.zero;
     setState(() {
       _activeSession = null;
+      _activeSessionMarkerIcon = null;
+      _activeSessionMarkerCacheKey = null;
+      _activeSessionMarkerAnchor = const Offset(0.5, 1.0);
     });
     unawaited(ActiveSessionStorage.clear());
 
@@ -1122,4 +1176,157 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       ),
     );
   }
+}
+
+class _ActiveSessionMarkerAsset {
+  const _ActiveSessionMarkerAsset({
+    required this.descriptor,
+    required this.anchor,
+  });
+  final BitmapDescriptor descriptor;
+  final Offset anchor;
+}
+
+/// Rasterises the always-visible label + pin marker for the active session
+/// via dart:ui Canvas. Returns both the BitmapDescriptor and the anchor so
+/// the caller can place the lat/lng exactly at the pin centre regardless of
+/// label height.
+Future<_ActiveSessionMarkerAsset> _renderActiveSessionMarkerAsset({
+  required String title,
+  required String subtitle,
+  required double devicePixelRatio,
+}) async {
+  // All values below are logical pixels — the canvas is scaled by DPR
+  // before drawing so the rendered PNG is sharp on high-density displays.
+  const double horizontalPadding = 12;
+  const double verticalPadding = 8;
+  const double bubbleRadius = 12;
+  const double tailHeight = 7;
+  const double tailWidth = 14;
+  const double pinOuterRadius = 11;
+  const double pinInnerRadius = 8;
+  const double pinDotRadius = 3;
+  const double bubbleToPinGap = 3;
+  const double textGap = 2;
+  const double maxTextWidth = 220;
+
+  final titlePainter = TextPainter(
+    text: TextSpan(
+      text: title,
+      style: const TextStyle(
+        color: Colors.white,
+        fontSize: 13,
+        fontWeight: FontWeight.w700,
+        height: 1.15,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+    maxLines: 1,
+    ellipsis: '…',
+  )..layout(maxWidth: maxTextWidth);
+
+  final subtitlePainter = TextPainter(
+    text: TextSpan(
+      text: subtitle,
+      style: TextStyle(
+        color: Colors.white.withValues(alpha: 0.92),
+        fontSize: 11,
+        fontWeight: FontWeight.w500,
+        height: 1.2,
+      ),
+    ),
+    textDirection: TextDirection.ltr,
+    maxLines: 1,
+    ellipsis: '…',
+  )..layout(maxWidth: maxTextWidth);
+
+  final textBlockWidth = math.max(titlePainter.width, subtitlePainter.width);
+  final bubbleWidth = textBlockWidth + horizontalPadding * 2;
+  final bubbleHeight =
+      verticalPadding * 2 + titlePainter.height + textGap + subtitlePainter.height;
+
+  final logicalWidth = math.max(bubbleWidth, pinOuterRadius * 2 + 2);
+  final preTailHeight = bubbleHeight + tailHeight + bubbleToPinGap;
+  final logicalHeight = preTailHeight + pinOuterRadius * 2;
+
+  final recorder = ui.PictureRecorder();
+  final canvas = Canvas(recorder);
+  canvas.scale(devicePixelRatio);
+
+  // Bubble + tail in a single path so the shadow is unified.
+  final bubbleLeft = (logicalWidth - bubbleWidth) / 2;
+  final bubbleRect = RRect.fromRectAndRadius(
+    Rect.fromLTWH(bubbleLeft, 0, bubbleWidth, bubbleHeight),
+    const Radius.circular(bubbleRadius),
+  );
+  final bubblePath = Path()..addRRect(bubbleRect);
+  final centerX = logicalWidth / 2;
+  bubblePath.moveTo(centerX - tailWidth / 2, bubbleHeight - 0.5);
+  bubblePath.lineTo(centerX, bubbleHeight + tailHeight);
+  bubblePath.lineTo(centerX + tailWidth / 2, bubbleHeight - 0.5);
+  bubblePath.close();
+
+  canvas.drawShadow(
+    bubblePath,
+    const Color(0xCC000000),
+    2,
+    false,
+  );
+  canvas.drawPath(bubblePath, Paint()..color = const Color(0xFF1B5E20));
+
+  titlePainter.paint(
+    canvas,
+    Offset((logicalWidth - titlePainter.width) / 2, verticalPadding),
+  );
+  subtitlePainter.paint(
+    canvas,
+    Offset(
+      (logicalWidth - subtitlePainter.width) / 2,
+      verticalPadding + titlePainter.height + textGap,
+    ),
+  );
+
+  // Pin: white halo, accent fill, white centre dot.
+  final pinCenterY = preTailHeight + pinOuterRadius;
+  final pinCenter = Offset(centerX, pinCenterY);
+  canvas.drawCircle(
+    pinCenter,
+    pinOuterRadius,
+    Paint()..color = Colors.white,
+  );
+  canvas.drawCircle(
+    pinCenter,
+    pinInnerRadius,
+    Paint()..color = const Color(0xFF43A047),
+  );
+  canvas.drawCircle(
+    pinCenter,
+    pinDotRadius,
+    Paint()..color = Colors.white,
+  );
+
+  final picture = recorder.endRecording();
+  final imageWidth = (logicalWidth * devicePixelRatio).ceil();
+  final imageHeight = (logicalHeight * devicePixelRatio).ceil();
+  final image = await picture.toImage(imageWidth, imageHeight);
+  picture.dispose();
+
+  final byteData = await image.toByteData(format: ui.ImageByteFormat.png);
+  image.dispose();
+  if (byteData == null) {
+    return _ActiveSessionMarkerAsset(
+      descriptor: BitmapDescriptor.defaultMarkerWithHue(
+        BitmapDescriptor.hueAzure,
+      ),
+      anchor: const Offset(0.5, 1.0),
+    );
+  }
+
+  return _ActiveSessionMarkerAsset(
+    descriptor: BitmapDescriptor.bytes(
+      byteData.buffer.asUint8List(),
+      imagePixelRatio: devicePixelRatio,
+    ),
+    anchor: Offset(0.5, pinCenterY / logicalHeight),
+  );
 }
