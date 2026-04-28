@@ -35,6 +35,14 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
   Position? _currentPosition;
   Set<Marker> _markers = {};
+  // Spot markers built from the latest _loadSpots result. Stored separately
+  // from _markers so the destination and active-session markers can be
+  // composed on top without being overwritten by spot refreshes.
+  Set<Marker> _spotMarkers = {};
+  // Pin for the place selected from the search dropdown (Google Places).
+  // Persists across map pans and silent spot refreshes; replaced when the
+  // user picks a different place.
+  Marker? _destinationMarker;
   List<ParkingSpot> _spots = [];
   List<ParkingSpot> _searchResults = [];
   List<PlaceSuggestion> _placeSuggestions = [];
@@ -114,7 +122,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     _activeSessionElapsed.value = DateTime.now().difference(session.startTime);
     setState(() {
       _activeSession = session;
-      _markers = {_buildActiveSessionMarker(session)};
+      _markers = _composeMarkers();
     });
     _startActiveSessionTicker();
 
@@ -232,10 +240,20 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
 
     final lat = resolved?.latitude;
     final lng = resolved?.longitude;
-    if (lat == null || lng == null) {
+    if (resolved == null || lat == null || lng == null) {
       _showError('Не може да се вчита локацијата');
       return;
     }
+
+    setState(() {
+      _destinationMarker = _buildDestinationMarker(
+        latitude: lat,
+        longitude: lng,
+        title: resolved.label,
+        snippet: resolved.secondary,
+      );
+      _markers = _composeMarkers();
+    });
 
     await _mapController?.animateCamera(
       CameraUpdate.newLatLngZoom(LatLng(lat, lng), 18),
@@ -410,11 +428,13 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     bool showLoadingIndicator = true,
   }) async {
     // While a session is active, the map only ever shows the parked car
-    // marker — skip the spots fetch entirely.
+    // marker — skip the spots fetch entirely. The destination pin (if any)
+    // is preserved by _composeMarkers().
     if (_activeSession != null) {
       setState(() {
         _isLoading = false;
-        _markers = {_buildActiveSessionMarker(_activeSession!)};
+        _spotMarkers = const {};
+        _markers = _composeMarkers();
       });
       return;
     }
@@ -439,14 +459,16 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       if (_activeSession != null) {
         setState(() {
           _spots = spots;
-          _markers = {_buildActiveSessionMarker(_activeSession!)};
+          _spotMarkers = const {};
+          _markers = _composeMarkers();
           _isLoading = false;
         });
         return;
       }
       setState(() {
         _spots = spots;
-        _markers = _buildMarkers(spots);
+        _spotMarkers = _buildMarkers(spots);
+        _markers = _composeMarkers();
         _isLoading = false;
       });
 
@@ -482,6 +504,44 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     }).toSet();
   }
 
+  /// Combines the parking spot markers (or, while a session is active,
+  /// the parked-car marker) with the destination pin if one has been set
+  /// from a search selection. Centralised so every marker mutation goes
+  /// through the same composition logic and the destination pin can't be
+  /// accidentally overwritten by a spot refresh.
+  Set<Marker> _composeMarkers() {
+    final result = <Marker>{};
+    final session = _activeSession;
+    if (session != null) {
+      result.add(_buildActiveSessionMarker(session));
+    } else {
+      result.addAll(_spotMarkers);
+    }
+    final destination = _destinationMarker;
+    if (destination != null) {
+      result.add(destination);
+    }
+    return result;
+  }
+
+  /// Distinct red pin (Google Maps style) dropped at the place the user
+  /// picked from the search dropdown. Uses a stable markerId so successive
+  /// selections replace the previous pin instead of stacking up.
+  Marker _buildDestinationMarker({
+    required double latitude,
+    required double longitude,
+    required String title,
+    String? snippet,
+  }) {
+    return Marker(
+      markerId: const MarkerId('search_destination'),
+      position: LatLng(latitude, longitude),
+      icon: BitmapDescriptor.defaultMarkerWithHue(BitmapDescriptor.hueRed),
+      infoWindow: InfoWindow(title: title, snippet: snippet),
+      zIndexInt: 2,
+    );
+  }
+
   /// A clearly distinct marker (azure) for the parked car. Using the
   /// default bitmap with a different hue avoids the brittleness of
   /// loading a custom image asset, while still being instantly readable
@@ -503,7 +563,11 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     _activeSessionElapsed.value = DateTime.now().difference(session.startTime);
     setState(() {
       _activeSession = session;
-      _markers = {_buildActiveSessionMarker(session)};
+      _spotMarkers = const {};
+      // The user has reached parking — drop the destination pin so the
+      // map only shows the parked-car marker for the session.
+      _destinationMarker = null;
+      _markers = _composeMarkers();
     });
     unawaited(ActiveSessionStorage.save(session));
     _startActiveSessionTicker();
