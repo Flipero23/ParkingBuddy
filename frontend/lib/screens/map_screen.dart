@@ -54,6 +54,17 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   bool _mapReady = false;
   bool _initialLoadStarted = false;
 
+  // Latest camera target reported by onCameraMove. Used by the idle handler
+  // to refetch nearby spots after the user stops panning the map.
+  LatLng? _lastMapCenter;
+  // Last center we actually issued a getNearbySpots request for. Lets us
+  // skip refetches when the camera barely moved, including programmatic
+  // animations that already triggered their own load.
+  LatLng? _lastFetchedCenter;
+  Timer? _idleDebounce;
+  static const Duration _idleDebounceDuration = Duration(milliseconds: 400);
+  static const double _idleRefetchThresholdMeters = 50;
+
   ActiveSession? _activeSession;
   Timer? _activeSessionTicker;
   // ValueNotifier so the 1Hz timer tick only rebuilds the small timer text,
@@ -120,6 +131,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   @override
   void dispose() {
     _searchDebounce?.cancel();
+    _idleDebounce?.cancel();
     _activeSessionTicker?.cancel();
     _activeSessionElapsed.dispose();
     _mapController?.dispose();
@@ -326,6 +338,48 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     });
   }
 
+  /// Streamed by GoogleMap during pan/zoom. We just stash the latest target
+  /// — the actual refetch is deferred to onCameraIdle + a debounce so we
+  /// don't spam the API on every frame.
+  void _onCameraMove(CameraPosition position) {
+    _lastMapCenter = position.target;
+  }
+
+  /// Fires once the user stops moving the map. Debounced so that quick
+  /// successive moves coalesce into a single refetch. Skipped while a
+  /// session is active (the map should only show the parked car) and when
+  /// the camera hasn't drifted far enough from the last fetch to be worth
+  /// another request — this also dedupes the idle event triggered by our
+  /// own programmatic animateCamera calls (recenter, search tap, etc).
+  void _onMapIdle() {
+    if (_activeSession != null) return;
+    if (!_initialLoadStarted) return;
+    final center = _lastMapCenter;
+    if (center == null) return;
+
+    _idleDebounce?.cancel();
+    _idleDebounce = Timer(_idleDebounceDuration, () {
+      if (!mounted || _activeSession != null) return;
+      final fetched = _lastFetchedCenter;
+      if (fetched != null) {
+        final distance = Geolocator.distanceBetween(
+          fetched.latitude,
+          fetched.longitude,
+          center.latitude,
+          center.longitude,
+        );
+        if (distance < _idleRefetchThresholdMeters) return;
+      }
+      unawaited(
+        _loadSpots(
+          center.latitude,
+          center.longitude,
+          showLoadingIndicator: false,
+        ),
+      );
+    });
+  }
+
   /// Loads the initial set of spots only once both prerequisites are met:
   /// the map is ready AND the location/permission flow has resolved (either
   /// to a real position or to "use default"). Either side calls this after
@@ -353,6 +407,7 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
     double lat,
     double lon, {
     bool announceEmpty = false,
+    bool showLoadingIndicator = true,
   }) async {
     // While a session is active, the map only ever shows the parked car
     // marker — skip the spots fetch entirely.
@@ -364,7 +419,13 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
       return;
     }
 
-    setState(() => _isLoading = true);
+    // Record this as the last center we issued a request for, so the idle
+    // handler can skip refetches that haven't moved the camera meaningfully.
+    _lastFetchedCenter = LatLng(lat, lon);
+
+    if (showLoadingIndicator) {
+      setState(() => _isLoading = true);
+    }
     try {
       final spots = await _apiService.getNearbySpots(
         lat: lat,
@@ -626,6 +687,8 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
               zoom: 18,
             ),
             onMapCreated: _onMapCreated,
+            onCameraMove: _onCameraMove,
+            onCameraIdle: _onMapIdle,
             markers: _markers,
             myLocationEnabled: _hasLocationPermission,
             myLocationButtonEnabled: false,
