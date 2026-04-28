@@ -1,6 +1,6 @@
 # ParkingBuddy — Project Overview
 
-ParkingBuddy is a full-stack smart parking app for Skopje. A Flutter mobile client lets drivers register, log in, top up a prepaid balance, find spots on a live Google Map, reserve them, start and (optionally) extend pre-paid parking sessions, and review their personal history. It is backed by a Spring Boot REST API with JWT authentication on top of a PostgreSQL + PostGIS database for location-aware spot lookup.
+ParkingBuddy is a full-stack smart parking app for Debar Maalo. A Flutter mobile client lets drivers register, log in, top up a prepaid balance, find spots on a live Google Map, reserve them, start and (optionally) extend pre-paid parking sessions, and review their personal history. It is backed by a Spring Boot REST API with JWT authentication on top of a PostgreSQL + PostGIS database for location-aware spot lookup.
 
 ---
 
