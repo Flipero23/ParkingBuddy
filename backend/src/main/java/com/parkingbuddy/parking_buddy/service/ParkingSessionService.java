@@ -73,6 +73,8 @@ public class ParkingSessionService {
             throw new IllegalArgumentException("Duration must be 1 or 2 hours");
         }
 
+        String normalizedPlate = LicensePlateValidator.normalizeAndValidate(licensePlate);
+
         ParkingSpot spot = lockSpot(spotId);
 
         if (!STATUS_AVAILABLE.equals(spot.getStatus()) && !STATUS_RESERVED.equals(spot.getStatus())) {
@@ -97,7 +99,7 @@ public class ParkingSessionService {
 
         ParkingSession session = new ParkingSession();
         session.setParkingSpotId(spotId);
-        session.setLicensePlate(licensePlate);
+        session.setLicensePlate(normalizedPlate);
         session.setStartTime(LocalDateTime.now());
         session.setStatus(SESSION_ACTIVE);
         session.setUserId(userId);

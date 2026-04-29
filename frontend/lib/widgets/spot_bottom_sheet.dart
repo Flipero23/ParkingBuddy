@@ -253,6 +253,53 @@ class _SpotBottomSheetState extends State<SpotBottomSheet> {
     if (_isProcessing) return;
     setState(() => _isProcessing = true);
 
+    // Collect plate + duration + (mock) payment BEFORE reserving the spot.
+    // The backend reservation is only created after payment succeeds, so a
+    // user who bails out of any of the dialogs does not hold the spot.
+    // Prefill the plate input from the user's saved profile plate if any
+    // (only valid MK plates flow through, foreign saved values are skipped
+    // to avoid wedging the dialog into the wrong mode).
+    final savedPlate = widget.authService?.licensePlate;
+    final licensePlate = await showDialog<String>(
+      context: context,
+      builder: (_) => LicensePlateDialog(initialValue: savedPlate),
+    );
+    if (licensePlate == null) {
+      if (mounted) setState(() => _isProcessing = false);
+      return;
+    }
+    if (!mounted) return;
+
+    final durationHours = await showDialog<int>(
+      context: context,
+      builder: (_) => DurationPickerDialog(pricePerHour: _spot.pricePerHour),
+    );
+    if (durationHours == null) {
+      if (mounted) setState(() => _isProcessing = false);
+      return;
+    }
+    if (!mounted) return;
+
+    final totalCost = _spot.pricePerHour * durationHours;
+
+    final paymentResult = await Navigator.of(context).push<PaymentResult>(
+      MaterialPageRoute(
+        builder: (_) => PaymentScreen(
+          spot: _spot,
+          licensePlate: licensePlate,
+          durationHours: durationHours,
+          totalCost: totalCost,
+          authService: widget.authService,
+        ),
+      ),
+    );
+    if (paymentResult == null) {
+      if (mounted) setState(() => _isProcessing = false);
+      return;
+    }
+    if (!mounted) return;
+
+    // Mock payment succeeded — now create the reservation on the backend.
     try {
       await widget.apiService.reserveSpot(_spot.id);
       if (!mounted) return;
@@ -265,6 +312,12 @@ class _SpotBottomSheetState extends State<SpotBottomSheet> {
             spot: _spot,
             apiService: widget.apiService,
             authService: widget.authService,
+            licensePlate: licensePlate,
+            durationHours: durationHours,
+            paidAmount: totalCost,
+            paymentMethod: paymentResult.paymentMethod,
+            transactionId: paymentResult.transactionId,
+            onActiveSessionStarted: widget.onActiveSessionStarted,
           ),
         ),
       );
@@ -274,17 +327,17 @@ class _SpotBottomSheetState extends State<SpotBottomSheet> {
       }
     } on ApiException catch (e) {
       if (!mounted) return;
-      // Reset local processing state — we'll either close the sheet or stay
-      // on it depending on whether this was a 409 conflict.
       setState(() => _isProcessing = false);
 
       if (e.statusCode == 409) {
-        // Spot was just claimed by someone else. Close the (now stale) sheet,
-        // tell the user, and refresh the map.
+        // Spot was just claimed by someone else. Mock-refund the payment,
+        // close the (now stale) sheet, tell the user, and refresh the map.
         Navigator.of(context).pop();
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
-            content: Text('Местото веќе не е достапно'),
+            content: Text(
+              'Местото веќе не е достапно. Средствата се вратени.',
+            ),
             backgroundColor: AppColors.danger,
           ),
         );
@@ -336,9 +389,10 @@ Future<void> startParkingFlow({
   bool replacePrevious = false,
   void Function(ActiveSession session)? onSessionStarted,
 }) async {
+  final savedPlate = authService?.licensePlate;
   final licensePlate = await showDialog<String>(
     context: context,
-    builder: (_) => const LicensePlateDialog(),
+    builder: (_) => LicensePlateDialog(initialValue: savedPlate),
   );
   if (licensePlate == null || !context.mounted) return;
 

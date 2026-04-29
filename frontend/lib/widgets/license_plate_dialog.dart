@@ -3,18 +3,13 @@ import 'package:flutter/services.dart';
 import '../theme.dart';
 
 class LicensePlateDialog extends StatefulWidget {
-  const LicensePlateDialog({super.key});
+  /// Optional value to prefill the input with — used to seed the dialog from
+  /// the user's saved profile plate so they don't retype it every session.
+  final String? initialValue;
 
-  @override
-  State<LicensePlateDialog> createState() => _LicensePlateDialogState();
-}
+  const LicensePlateDialog({super.key, this.initialValue});
 
-class _LicensePlateDialogState extends State<LicensePlateDialog> {
-  final _controller = TextEditingController();
-  bool _isMacedonian = true;
-  String? _errorText;
-
-  static const _validCityCodes = {
+  static const Set<String> validCityCodes = {
     'BE', 'BT', 'DB', 'DE', 'DH', 'DK', 'GE', 'GV',
     'KA', 'KI', 'KO', 'KR', 'KP', 'KS', 'KU',
     'MB', 'MK', 'NE', 'OH', 'PP', 'PE', 'PS',
@@ -22,18 +17,47 @@ class _LicensePlateDialogState extends State<LicensePlateDialog> {
     'TE', 'VA', 'VE', 'VI', 'VV',
   };
 
-  static final _mkPlateRegex = RegExp(
+  static final RegExp mkPlateRegex = RegExp(
     r'^([A-Z]{2})(\d{3,4})([A-Z]{2})$',
   );
+
+  /// Shared MK-plate validation. Mirrors the backend LicensePlateValidator.
+  /// Used by callers that want to test a saved plate before passing it as
+  /// a prefill.
+  static bool isValidMkPlate(String raw) {
+    final text = raw.trim().toUpperCase();
+    if (text.isEmpty) return false;
+    final match = mkPlateRegex.firstMatch(text);
+    if (match == null) return false;
+    return validCityCodes.contains(match.group(1));
+  }
+
+  @override
+  State<LicensePlateDialog> createState() => _LicensePlateDialogState();
+}
+
+class _LicensePlateDialogState extends State<LicensePlateDialog> {
+  late final TextEditingController _controller;
+  bool _isMacedonian = true;
+  String? _errorText;
+
+  @override
+  void initState() {
+    super.initState();
+    final seed = widget.initialValue?.trim().toUpperCase() ?? '';
+    _controller = TextEditingController(text: seed);
+    if (seed.isNotEmpty) {
+      // If the seed doesn't look like a Macedonian plate, default the toggle
+      // to Foreign so prefill + the input rules stay consistent.
+      _isMacedonian = LicensePlateDialog.isValidMkPlate(seed);
+    }
+  }
 
   bool get _isValid {
     final text = _controller.text.trim();
     if (text.isEmpty) return false;
     if (!_isMacedonian) return text.length >= 2;
-
-    final match = _mkPlateRegex.firstMatch(text);
-    if (match == null) return false;
-    return _validCityCodes.contains(match.group(1));
+    return LicensePlateDialog.isValidMkPlate(text);
   }
 
   void _validate() {
@@ -43,8 +67,7 @@ class _LicensePlateDialogState extends State<LicensePlateDialog> {
       return;
     }
 
-    final match = _mkPlateRegex.firstMatch(text);
-    if (match == null || !_validCityCodes.contains(match.group(1))) {
+    if (!LicensePlateDialog.isValidMkPlate(text)) {
       setState(() => _errorText = 'Невалидна регистарска таблица');
     } else {
       setState(() => _errorText = null);

@@ -1,21 +1,47 @@
 import 'dart:async';
 import 'package:flutter/material.dart';
+import '../models/active_session.dart';
 import '../models/parking_spot.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../theme.dart';
-import '../widgets/spot_bottom_sheet.dart';
+import 'active_session_screen.dart';
+import 'receipt_screen.dart';
 
+/// Reservation timer screen shown AFTER mock payment + spot reservation.
+///
+/// The user has already chosen plate + duration and completed (mock) payment
+/// in the bottom sheet flow, so this screen no longer prompts for any of
+/// those when the user clicks "Start parking" — it just calls the backend
+/// to flip the reservation into an active session for the prepaid duration.
 class ReservationScreen extends StatefulWidget {
   final ParkingSpot spot;
   final ApiService apiService;
   final AuthService? authService;
 
+  // Prepaid context — collected before reservation, replayed on start.
+  final String licensePlate;
+  final int durationHours;
+  final double paidAmount;
+  final String paymentMethod;
+  final String transactionId;
+
+  /// Optional hook used by [MapScreen] when start-parking should hand the
+  /// active session back to the map so it can show the minimized timer card
+  /// instead of pushing the full active session screen.
+  final void Function(ActiveSession session)? onActiveSessionStarted;
+
   const ReservationScreen({
     super.key,
     required this.spot,
     required this.apiService,
+    required this.licensePlate,
+    required this.durationHours,
+    required this.paidAmount,
+    required this.paymentMethod,
+    required this.transactionId,
     this.authService,
+    this.onActiveSessionStarted,
   });
 
   @override
@@ -26,6 +52,7 @@ class _ReservationScreenState extends State<ReservationScreen>
     with SingleTickerProviderStateMixin {
   late Timer _timer;
   int _remainingSeconds = 15 * 60; // 15 minutes
+  bool _isStarting = false;
   late AnimationController _fadeController;
   late Animation<double> _fadeAnimation;
 
@@ -69,9 +96,11 @@ class _ReservationScreenState extends State<ReservationScreen>
     try {
       await widget.apiService.cancelReservation(widget.spot.id);
     } on Exception {
-      // ignore
+      // Ignore — best-effort release; the spot will eventually be reclaimed.
     }
     if (!mounted) return;
+    // Spec: after 15 min the reservation expires and the prepaid amount is
+    // non-refundable, so no refund message here.
     ScaffoldMessenger.of(context).showSnackBar(
       const SnackBar(
         content: Text('Резервацијата истече'),
@@ -82,33 +111,122 @@ class _ReservationScreenState extends State<ReservationScreen>
   }
 
   Future<void> _cancelReservation() async {
+    if (_isStarting) return;
     try {
       await widget.apiService.cancelReservation(widget.spot.id);
     } on ApiException catch (e) {
       if (!mounted) return;
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(
-          content: Text(e.message),
-          backgroundColor: AppColors.danger,
-        ),
+        SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
       );
       return;
     }
 
     if (!mounted) return;
+    // Mock refund — no real charge happened (the wallet is only debited on
+    // start-parking), but the user perceived a payment, so confirm refund.
+    ScaffoldMessenger.of(context).showSnackBar(
+      const SnackBar(
+        content: Text('Резервацијата е откажана. Средствата се вратени.'),
+        backgroundColor: AppColors.accent,
+      ),
+    );
     Navigator.of(context).pop(true);
   }
 
   Future<void> _startParking() async {
-    await startParkingFlow(
-      context: context,
-      spot: widget.spot,
-      apiService: widget.apiService,
-      authService: widget.authService,
-      onComplete: () {},
-      closeBottomSheet: false,
-      replacePrevious: true,
-    );
+    if (_isStarting) return;
+    setState(() => _isStarting = true);
+
+    try {
+      final session = await widget.apiService.startParking(
+        widget.spot.id,
+        widget.licensePlate,
+        durationHours: widget.durationHours,
+      );
+      if (!mounted) return;
+
+      // Backend has now actually deducted wallet balance — refresh cache.
+      if (widget.authService?.isLoggedIn == true) {
+        try {
+          await widget.authService!.getProfile();
+        } on AuthException {
+          // Non-fatal — keep stale cached balance.
+        }
+        if (!mounted) return;
+      }
+
+      _timer.cancel();
+
+      await Navigator.of(context).push(
+        MaterialPageRoute(
+          builder: (_) => ReceiptScreen(
+            spot: widget.spot,
+            licensePlate: widget.licensePlate,
+            totalCost: widget.paidAmount,
+            totalTime: Duration(hours: widget.durationHours),
+            paymentMethod: widget.paymentMethod,
+            transactionId: widget.transactionId,
+          ),
+        ),
+      );
+      if (!mounted) return;
+
+      final activeSession = ActiveSession(
+        spot: widget.spot,
+        licensePlate: widget.licensePlate,
+        startTime: session.startTime,
+        durationHours: session.durationHours ?? widget.durationHours,
+        paidAmount: session.paidAmount ?? widget.paidAmount,
+      );
+
+      if (widget.onActiveSessionStarted != null) {
+        // Pop the reservation screen FIRST, then hand the session over.
+        // MapScreen's callback synchronously pushes ActiveSessionScreen on
+        // top of the navigator; popping AFTER the callback would remove
+        // that just-pushed screen instead of this reservation screen and
+        // leave the user stuck on a stale, timer-cancelled reservation.
+        Navigator.of(context).pop(true);
+        widget.onActiveSessionStarted!(activeSession);
+        return;
+      }
+
+      // Replace reservation in the stack so back from active session goes
+      // straight to the map.
+      await Navigator.of(context).pushReplacement<ActiveSessionResult, bool>(
+        MaterialPageRoute<ActiveSessionResult>(
+          builder: (_) => ActiveSessionScreen(
+            spot: widget.spot,
+            licensePlate: widget.licensePlate,
+            sessionStartTime: activeSession.startTime,
+            durationHours: activeSession.durationHours,
+            paidAmount: activeSession.paidAmount,
+            apiService: widget.apiService,
+            authService: widget.authService,
+          ),
+        ),
+      );
+    } on ApiException catch (e) {
+      if (!mounted) return;
+
+      if (e.statusCode == 409) {
+        // Spot was somehow lost (shouldn't happen — we hold the reservation).
+        // Treat it like an expiry: show error and pop.
+        ScaffoldMessenger.of(context).showSnackBar(
+          const SnackBar(
+            content: Text('Местото веќе не е достапно'),
+            backgroundColor: AppColors.danger,
+          ),
+        );
+        Navigator.of(context).pop(true);
+        return;
+      }
+
+      ScaffoldMessenger.of(context).showSnackBar(
+        SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
+      );
+      setState(() => _isStarting = false);
+    }
   }
 
   @override
@@ -176,7 +294,7 @@ class _ReservationScreenState extends State<ReservationScreen>
 
               const SizedBox(height: 24),
 
-              // Spot info card
+              // Spot + prepaid info card
               Card(
                 child: Padding(
                   padding: const EdgeInsets.all(20),
@@ -188,9 +306,11 @@ class _ReservationScreenState extends State<ReservationScreen>
                       const Divider(height: 20),
                       _infoRow('Зона', widget.spot.zone),
                       const Divider(height: 20),
+                      _infoRow('Регистарска таблица', widget.licensePlate),
+                      const Divider(height: 20),
                       _infoRow(
-                        'Цена по час',
-                        '${widget.spot.pricePerHour.toStringAsFixed(0)} МКД',
+                        'Платено однапред',
+                        '${widget.paidAmount.toStringAsFixed(0)} МКД · ${widget.durationHours} ч',
                       ),
                     ],
                   ),
@@ -203,15 +323,24 @@ class _ReservationScreenState extends State<ReservationScreen>
               SizedBox(
                 width: double.infinity,
                 child: ElevatedButton(
-                  onPressed: _startParking,
-                  child: const Text('Започни паркирање'),
+                  onPressed: _isStarting ? null : _startParking,
+                  child: _isStarting
+                      ? const SizedBox(
+                          width: 20,
+                          height: 20,
+                          child: CircularProgressIndicator(
+                            strokeWidth: 2,
+                            color: Colors.white,
+                          ),
+                        )
+                      : const Text('Започни паркирање'),
                 ),
               ),
               const SizedBox(height: 12),
               SizedBox(
                 width: double.infinity,
                 child: OutlinedButton(
-                  onPressed: _cancelReservation,
+                  onPressed: _isStarting ? null : _cancelReservation,
                   style: OutlinedButton.styleFrom(
                     side: const BorderSide(color: AppColors.danger, width: 2),
                     foregroundColor: AppColors.danger,
@@ -231,11 +360,13 @@ class _ReservationScreenState extends State<ReservationScreen>
     return Row(
       mainAxisAlignment: MainAxisAlignment.spaceBetween,
       children: [
-        Text(
-          label,
-          style: const TextStyle(
-            color: AppColors.textSecondary,
-            fontSize: 14,
+        Flexible(
+          child: Text(
+            label,
+            style: const TextStyle(
+              color: AppColors.textSecondary,
+              fontSize: 14,
+            ),
           ),
         ),
         Text(
