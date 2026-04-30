@@ -68,3 +68,9 @@ app.*.map.json
 /android/app/debug
 /android/app/profile
 /android/app/release
+
+# Flutter build output (contains compiled AndroidManifest with inlined API keys)
+frontend/build/
+frontend/android/local.properties
+frontend/.flutter-plugins
+frontend/.flutter-plugins-dependencies
