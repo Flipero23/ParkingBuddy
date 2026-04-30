@@ -541,7 +541,7 @@ The Flutter app reads the API key once via `MapsConfig.apiKey()` and uses it for
 **Recommended (Android):** put the key in `frontend/android/local.properties` (already gitignored):
 
 ```
-MAPS_API_KEY=AIza...your-key...
+MAPS_API_KEY=<YOUR_GOOGLE_MAPS_API_KEY>
 ```
 
 It will be inlined into `AndroidManifest.xml` as `com.google.android.geo.API_KEY` (existing manifest placeholder), and `MapsConfig` will pick it up at runtime via the `parking_buddy/config` MethodChannel — no extra `--dart-define` needed.
@@ -549,7 +549,7 @@ It will be inlined into `AndroidManifest.xml` as `com.google.android.geo.API_KEY
 **Alternative (any platform):** pass it at compile time:
 
 ```bash
-flutter run --dart-define=MAPS_API_KEY=AIza...your-key...
+flutter run --dart-define=MAPS_API_KEY=<YOUR_GOOGLE_MAPS_API_KEY>
 ```
 
 For HTTP-based services (Places Autocomplete, Place Details, Geocoding) the key must allow direct HTTP API calls — i.e. it cannot be restricted exclusively to the Android package + SHA-1, because Maps-SDK restrictions don't apply to those REST endpoints. If Autocomplete returns `REQUEST_DENIED`, broaden the key restriction or use a separate key for HTTP calls.
