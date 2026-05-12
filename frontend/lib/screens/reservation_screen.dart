@@ -172,6 +172,9 @@ class _ReservationScreenState extends State<ReservationScreen>
       );
       if (!mounted) return;
 
+      // Use the backend's session.startTime so the paid duration counts
+      // from the moment payment was confirmed (session creation), not from
+      // when the user dismisses the receipt.
       final activeSession = ActiveSession(
         spot: widget.spot,
         licensePlate: widget.licensePlate,

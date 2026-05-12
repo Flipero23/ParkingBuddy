@@ -454,6 +454,9 @@ Future<void> startParkingFlow({
       Navigator.of(context).pop(); // close source (bottom sheet / reservation)
     }
 
+    // Use the backend's session.startTime so the paid duration counts from
+    // the moment payment was confirmed (session creation), not from when
+    // the user dismisses the receipt.
     final activeSession = ActiveSession(
       spot: spot,
       licensePlate: licensePlate,
