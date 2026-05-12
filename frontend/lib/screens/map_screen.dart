@@ -738,6 +738,13 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
   void _recenterMap() {
     _fabAnimController.forward().then((_) => _fabAnimController.reverse());
 
+    if (_destinationMarker != null) {
+      setState(() {
+        _destinationMarker = null;
+        _markers = _composeMarkers();
+      });
+    }
+
     if (_currentPosition != null) {
       final lat = _currentPosition!.latitude;
       final lon = _currentPosition!.longitude;
