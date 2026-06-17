@@ -1,6 +1,7 @@
 import 'dart:math';
 import 'package:flutter/material.dart';
 import '../models/parking_spot.dart';
+import '../services/api_service.dart';
 import '../services/auth_service.dart';
 import '../theme.dart';
 import 'receipt_screen.dart';
@@ -12,6 +13,14 @@ import 'receipt_screen.dart';
 /// On success returns a [PaymentResult] via Navigator.pop so the caller
 /// (spot bottom sheet / reservation screen) can then start the parking
 /// session with the paid [durationHours].
+///
+/// Pop value contract (caller pushes with `<Object>`):
+///   - `PaymentResult` — payment + backend confirmation succeeded.
+///   - `ApiException`  — simulated payment finished but the backend
+///                       confirmation hook ([onConfirm]) threw. The success
+///                       view is NOT shown so the caller can surface the
+///                       error (e.g. "spot already taken") cleanly.
+///   - `null`          — user backed out before paying.
 class PaymentResult {
   final String paymentMethod;
   final String transactionId;
@@ -33,6 +42,16 @@ class PaymentScreen extends StatefulWidget {
   /// Used by the extend-session flow where no new session start follows.
   final bool showReceiptOnSuccess;
 
+  /// Optional backend confirmation hook. Runs after the simulated payment
+  /// delay but BEFORE the success view is rendered. If it throws an
+  /// [ApiException] (e.g. backend returns 409 because the spot was just
+  /// claimed by another user), the success view is skipped entirely and
+  /// the screen pops with that exception — the user never sees a
+  /// successful-payment screen for a payment that didn't actually go
+  /// through.
+  final Future<void> Function(String paymentMethod, String transactionId)?
+      onConfirm;
+
   const PaymentScreen({
     super.key,
     required this.spot,
@@ -41,6 +60,7 @@ class PaymentScreen extends StatefulWidget {
     required this.totalCost,
     this.authService,
     this.showReceiptOnSuccess = false,
+    this.onConfirm,
   });
 
   @override
@@ -113,6 +133,28 @@ class _PaymentScreenState extends State<PaymentScreen>
     await Future.delayed(const Duration(seconds: 2));
     if (!mounted) return;
 
+    final method = _isLoggedIn
+        ? 'Паричник'
+        : _guestMethods[_selectedMethod].label;
+    final txnId =
+        'TXN-${Random().nextInt(99999999).toString().padLeft(8, '0')}';
+
+    // Run backend confirmation (e.g. startParking / reserveSpot) while
+    // still on the processing view. If it fails — typically a 409 because
+    // another user just claimed the spot — skip the success animation so
+    // the caller can show the conflict snackbar without a misleading
+    // "Successful payment" flashing first.
+    if (widget.onConfirm != null) {
+      try {
+        await widget.onConfirm!(method, txnId);
+      } on ApiException catch (e) {
+        if (!mounted) return;
+        Navigator.of(context).pop(e);
+        return;
+      }
+      if (!mounted) return;
+    }
+
     setState(() {
       _isProcessing = false;
       _isSuccess = true;
@@ -122,11 +164,6 @@ class _PaymentScreenState extends State<PaymentScreen>
     await Future.delayed(const Duration(milliseconds: 1200));
     if (!mounted) return;
 
-    final method = _isLoggedIn
-        ? 'Паричник'
-        : _guestMethods[_selectedMethod].label;
-    final txnId =
-        'TXN-${Random().nextInt(99999999).toString().padLeft(8, '0')}';
     final result = PaymentResult(
       paymentMethod: method,
       transactionId: txnId,

@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import '../models/active_session.dart';
+import '../models/parking_session.dart';
 import '../models/parking_spot.dart';
 import '../services/api_service.dart';
 import '../services/auth_service.dart';
@@ -282,7 +283,11 @@ class _SpotBottomSheetState extends State<SpotBottomSheet> {
 
     final totalCost = _spot.pricePerHour * durationHours;
 
-    final paymentResult = await Navigator.of(context).push<PaymentResult>(
+    // Reserve the spot on the backend as part of the payment confirmation
+    // step so a 409 (spot already claimed) is caught BEFORE the success
+    // view is rendered — the user sees only the conflict snackbar, never a
+    // "Successful payment" screen for a payment that didn't go through.
+    final outcome = await Navigator.of(context).push<Object>(
       MaterialPageRoute(
         builder: (_) => PaymentScreen(
           spot: _spot,
@@ -290,48 +295,22 @@ class _SpotBottomSheetState extends State<SpotBottomSheet> {
           durationHours: durationHours,
           totalCost: totalCost,
           authService: widget.authService,
+          onConfirm: (_, _) => widget.apiService.reserveSpot(_spot.id),
         ),
       ),
     );
-    if (paymentResult == null) {
-      if (mounted) setState(() => _isProcessing = false);
-      return;
-    }
     if (!mounted) return;
 
-    // Mock payment succeeded — now create the reservation on the backend.
-    try {
-      await widget.apiService.reserveSpot(_spot.id);
-      if (!mounted) return;
-
-      Navigator.of(context).pop();
-
-      final shouldRefresh = await Navigator.of(context).push<bool>(
-        MaterialPageRoute(
-          builder: (_) => ReservationScreen(
-            spot: _spot,
-            apiService: widget.apiService,
-            authService: widget.authService,
-            licensePlate: licensePlate,
-            durationHours: durationHours,
-            paidAmount: totalCost,
-            paymentMethod: paymentResult.paymentMethod,
-            transactionId: paymentResult.transactionId,
-            onActiveSessionStarted: widget.onActiveSessionStarted,
-          ),
-        ),
-      );
-
-      if (shouldRefresh == true) {
-        widget.onActionComplete();
-      }
-    } on ApiException catch (e) {
-      if (!mounted) return;
+    if (outcome == null) {
       setState(() => _isProcessing = false);
+      return;
+    }
 
-      if (e.statusCode == 409) {
-        // Spot was just claimed by someone else. Mock-refund the payment,
-        // close the (now stale) sheet, tell the user, and refresh the map.
+    if (outcome is ApiException) {
+      setState(() => _isProcessing = false);
+      if (outcome.statusCode == 409) {
+        // Spot was just claimed by someone else. Close the stale sheet,
+        // tell the user, and refresh the map.
         Navigator.of(context).pop();
         ScaffoldMessenger.of(context).showSnackBar(
           const SnackBar(
@@ -344,10 +323,36 @@ class _SpotBottomSheetState extends State<SpotBottomSheet> {
         widget.onActionComplete();
         return;
       }
-
       ScaffoldMessenger.of(context).showSnackBar(
-        SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
+        SnackBar(
+          content: Text(outcome.message),
+          backgroundColor: AppColors.danger,
+        ),
       );
+      return;
+    }
+
+    final paymentResult = outcome as PaymentResult;
+    Navigator.of(context).pop();
+
+    final shouldRefresh = await Navigator.of(context).push<bool>(
+      MaterialPageRoute(
+        builder: (_) => ReservationScreen(
+          spot: _spot,
+          apiService: widget.apiService,
+          authService: widget.authService,
+          licensePlate: licensePlate,
+          durationHours: durationHours,
+          paidAmount: totalCost,
+          paymentMethod: paymentResult.paymentMethod,
+          transactionId: paymentResult.transactionId,
+          onActiveSessionStarted: widget.onActiveSessionStarted,
+        ),
+      ),
+    );
+
+    if (shouldRefresh == true) {
+      widget.onActionComplete();
     }
   }
 
@@ -404,7 +409,13 @@ Future<void> startParkingFlow({
 
   final totalCost = spot.pricePerHour * durationHours;
 
-  final paymentResult = await Navigator.of(context).push<PaymentResult>(
+  // Start the parking session on the backend as part of the payment
+  // confirmation step. If the spot was just claimed by another user, the
+  // backend returns 409 and the PaymentScreen pops with the exception —
+  // the success view never renders, so the user only sees the conflict
+  // snackbar.
+  ParkingSession? startedSession;
+  final outcome = await Navigator.of(context).push<Object>(
     MaterialPageRoute(
       builder: (_) => PaymentScreen(
         spot: spot,
@@ -412,96 +423,26 @@ Future<void> startParkingFlow({
         durationHours: durationHours,
         totalCost: totalCost,
         authService: authService,
+        onConfirm: (_, _) async {
+          startedSession = await apiService.startParking(
+            spot.id,
+            licensePlate,
+            durationHours: durationHours,
+          );
+        },
       ),
     ),
   );
-  if (paymentResult == null || !context.mounted) return;
+  if (!context.mounted) return;
 
-  try {
-    final session = await apiService.startParking(
-      spot.id,
-      licensePlate,
-      durationHours: durationHours,
-    );
-    if (!context.mounted) return;
+  if (outcome == null) return; // user cancelled before paying
 
-    // Backend may have deducted wallet balance — refresh cached profile.
-    if (authService?.isLoggedIn == true) {
-      try {
-        await authService!.getProfile();
-      } on AuthException {
-        // Non-fatal — continue with stale cached balance.
-      }
-      if (!context.mounted) return;
-    }
-
-    // Show receipt for the prepaid amount.
-    await Navigator.of(context).push(
-      MaterialPageRoute(
-        builder: (_) => ReceiptScreen(
-          spot: spot,
-          licensePlate: licensePlate,
-          totalCost: totalCost,
-          totalTime: Duration(hours: durationHours),
-          paymentMethod: paymentResult.paymentMethod,
-          transactionId: paymentResult.transactionId,
-        ),
-      ),
-    );
-    if (!context.mounted) return;
-
-    if (closeBottomSheet && Navigator.of(context).canPop()) {
-      Navigator.of(context).pop(); // close source (bottom sheet / reservation)
-    }
-
-    // Use the backend's session.startTime so the paid duration counts from
-    // the moment payment was confirmed (session creation), not from when
-    // the user dismisses the receipt.
-    final activeSession = ActiveSession(
-      spot: spot,
-      licensePlate: licensePlate,
-      startTime: session.startTime,
-      durationHours: session.durationHours ?? durationHours,
-      paidAmount: session.paidAmount ?? totalCost,
-    );
-
-    if (onSessionStarted != null) {
-      // Parent (MapScreen) takes over: it stores the session, opens the
-      // active session screen and handles the minimize / end results.
-      onSessionStarted(activeSession);
-      onComplete();
-      return;
-    }
-
-    final route = MaterialPageRoute<ActiveSessionResult>(
-      builder: (_) => ActiveSessionScreen(
-        spot: spot,
-        licensePlate: licensePlate,
-        sessionStartTime: activeSession.startTime,
-        durationHours: activeSession.durationHours,
-        paidAmount: activeSession.paidAmount,
-        apiService: apiService,
-        authService: authService,
-      ),
-    );
-
-    if (replacePrevious) {
-      await Navigator.of(
-        context,
-      ).pushReplacement<ActiveSessionResult, ActiveSessionResult>(route);
-    } else {
-      await Navigator.of(context).push<ActiveSessionResult>(route);
-    }
-
-    onComplete();
-  } on ApiException catch (e) {
-    if (!context.mounted) return;
-
-    if (e.statusCode == 409) {
+  if (outcome is ApiException) {
+    if (outcome.statusCode == 409) {
       // Backend rejected the start because another user just claimed the
-      // spot. Do NOT create a local active session — close the source
-      // sheet/screen, surface the conflict, and refresh nearby spots so the
-      // user immediately sees the updated state.
+      // spot. Close the source sheet/screen, surface the conflict, and
+      // refresh nearby spots so the user immediately sees the updated
+      // state.
       if (closeBottomSheet && Navigator.of(context).canPop()) {
         Navigator.of(context).pop();
       }
@@ -514,9 +455,83 @@ Future<void> startParkingFlow({
       onComplete();
       return;
     }
-
     ScaffoldMessenger.of(context).showSnackBar(
-      SnackBar(content: Text(e.message), backgroundColor: AppColors.danger),
+      SnackBar(
+        content: Text(outcome.message),
+        backgroundColor: AppColors.danger,
+      ),
     );
+    return;
   }
+
+  final paymentResult = outcome as PaymentResult;
+  final session = startedSession!;
+
+  // Backend may have deducted wallet balance — refresh cached profile.
+  if (authService?.isLoggedIn == true) {
+    try {
+      await authService!.getProfile();
+    } on AuthException {
+      // Non-fatal — continue with stale cached balance.
+    }
+    if (!context.mounted) return;
+  }
+
+  // Show receipt for the prepaid amount.
+  await Navigator.of(context).push(
+    MaterialPageRoute(
+      builder: (_) => ReceiptScreen(
+        spot: spot,
+        licensePlate: licensePlate,
+        totalCost: totalCost,
+        totalTime: Duration(hours: durationHours),
+        paymentMethod: paymentResult.paymentMethod,
+        transactionId: paymentResult.transactionId,
+      ),
+    ),
+  );
+  if (!context.mounted) return;
+
+  if (closeBottomSheet && Navigator.of(context).canPop()) {
+    Navigator.of(context).pop(); // close source (bottom sheet / reservation)
+  }
+
+  // Use the backend's session.startTime so the paid duration counts from
+  // the moment payment was confirmed (session creation), not from when
+  // the user dismisses the receipt.
+  final activeSession = ActiveSession(
+    spot: spot,
+    licensePlate: licensePlate,
+    startTime: session.startTime,
+    durationHours: session.durationHours ?? durationHours,
+    paidAmount: session.paidAmount ?? totalCost,
+  );
+
+  if (onSessionStarted != null) {
+    onSessionStarted(activeSession);
+    onComplete();
+    return;
+  }
+
+  final route = MaterialPageRoute<ActiveSessionResult>(
+    builder: (_) => ActiveSessionScreen(
+      spot: spot,
+      licensePlate: licensePlate,
+      sessionStartTime: activeSession.startTime,
+      durationHours: activeSession.durationHours,
+      paidAmount: activeSession.paidAmount,
+      apiService: apiService,
+      authService: authService,
+    ),
+  );
+
+  if (replacePrevious) {
+    await Navigator.of(
+      context,
+    ).pushReplacement<ActiveSessionResult, ActiveSessionResult>(route);
+  } else {
+    await Navigator.of(context).push<ActiveSessionResult>(route);
+  }
+
+  onComplete();
 }
