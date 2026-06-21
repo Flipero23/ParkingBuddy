@@ -724,7 +724,15 @@ class _MapScreenState extends State<MapScreen> with TickerProviderStateMixin {
           // Don't refetch spots while a session is active — the only
           // marker on the map should remain the parked car.
           if (_activeSession != null) return;
-          if (_currentPosition != null) {
+          // Refetch around the area the user is actually viewing, not their
+          // GPS location. The reserved spot may have been found by searching
+          // or panning away from the current position (e.g. after cancelling
+          // a reservation, the freed spot must reappear where it is shown on
+          // screen). Mirror _onMapIdle's use of the map center.
+          final center = _lastMapCenter;
+          if (center != null) {
+            _loadSpots(center.latitude, center.longitude);
+          } else if (_currentPosition != null) {
             _loadSpots(_currentPosition!.latitude, _currentPosition!.longitude);
           } else {
             _loadSpotsAtDefault();
